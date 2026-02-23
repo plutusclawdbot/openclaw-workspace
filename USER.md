@@ -6,7 +6,7 @@ _Learn about the person you're helping. Update this as you go._
 - **What to call them:** Erlin
 - **Pronouns:** _(optional)_
 - **Timezone:** Europe/London
-- **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction). Prefers workspace saves to be committed and pushed by default.
+- **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction). Prefers workspace saves to be committed and pushed by default. Do not save/update individual daily memory files (`memory/YYYY-MM-DD.md`) unless explicitly requested.
 
 ## Context
 
