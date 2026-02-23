@@ -79,3 +79,11 @@ Decision rule:
 - If you need data extraction only: try normal flow, then **Scrapling**.
 - If you need high-stealth browser behavior/session realism: use **Camoufox**.
 - If you need clicks/logins/multi-step UI interaction: use browser automation.
+
+### SSH (m4mini)
+
+- host: `m4mini`
+- user: `plutusclawdbot`
+- primary LAN IP: `192.168.1.240` (en0)
+- alt LAN IP: `192.168.1.31` (en1)
+- quick connect: `ssh plutusclawdbot@192.168.1.240`
