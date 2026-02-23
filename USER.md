@@ -2,11 +2,11 @@
 
 _Learn about the person you're helping. Update this as you go._
 
-- **Name:** Plutus
-- **What to call them:** Plutus
+- **Name:** Erlin
+- **What to call them:** Erlin
 - **Pronouns:** _(optional)_
 - **Timezone:** Europe/London
-- **Notes:**
+- **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction).
 
 ## Context
 
