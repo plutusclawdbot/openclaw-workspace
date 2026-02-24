@@ -185,7 +185,7 @@ Provide:
 ---
 
 ## Style Constraints
-- Target length: **900–1500 words**
+- Target length: **700–1100 words**
 - Crisp, information-dense, no generic textbook explanations
 - Prefer bullets over long paragraphs
 - Use confidence tags with explicit thresholds:
