@@ -18,6 +18,11 @@ Write in a **direct, high-conviction, PM-ready** style:
 
 ## Output Format (Required)
 
+### Global Output Rules (Apply to all sections)
+- Use this bullet schema whenever possible: **Fact → Why it matters → Trade implication**
+- Add `Source:` lines under each major section (1–3 links or dataset references)
+- For any claim marked **Actionable alpha**, include only if supported by **2+ independent signals**
+
 ### 1) Executive Snapshot (5–10 bullets)
 - Most important cross-asset developments in last 24–72h
 - One-line "so what" for each
@@ -54,15 +59,29 @@ List 5–10 specific shifts:
 - Explicit trigger levels/events where possible
 
 ### 7) Polymarket Signal Check (Required)
-Run this CLI query and summarize notable signal from top markets:
+Run this CLI query and summarize notable signal from top markets (with liquidity filter + event dedupe):
 
 ```bash
-polymarket -o json markets list --active true --closed false --limit 500 --order volume \
-| jq '[.[] | . + {v24: ((.volume24hr // "0")|tonumber)}] | sort_by(.v24) | reverse | .[:10] | map({title: .question, volume24h: .v24, liquidity: ((.liquidity // "0")|tonumber), slug: .slug})'
+polymarket -o json markets list --active true --closed false --limit 1000 --order volume \
+| jq '[ .[]
+        | { question, slug,
+            event_slug: (.events[0].slug // .slug),
+            v24: ((.volume24hr // "0")|tonumber),
+            liq: ((.liquidity // "0")|tonumber) }
+        | select(.liq >= 250000)
+      ]
+      | group_by(.event_slug)
+      | map({
+          event: .[0].event_slug,
+          volume24h: (map(.v24) | add),
+          liquidity_max: (map(.liq) | max),
+          sample_markets: (map(.question)[:3])
+        })
+      | sort_by(.volume24h) | reverse | .[:10]'
 ```
 
 Then provide:
-- Top 10 by 24h volume (clean list)
+- Top 10 **deduped events** by 24h volume (clean list)
 - 3–5 interpretation bullets: what this flow implies about attention/risk narrative
 - Flag when market activity is event-driven noise vs durable macro signal
 
@@ -82,6 +101,7 @@ Then provide:
   - key narratives (positive/negative/neutral)
 - **Actionable alpha**:
   - 5–10 highest-signal observations
+  - include only observations supported by **2+ independent signals**
   - separate **noise** vs **tradeable insight**
   - include confidence tags: [High]/[Med]/[Low]
 
@@ -140,7 +160,7 @@ For each company, provide:
 Then add:
 - **Cross-company synthesis (5–10 bullets):** what is consistent vs diverging
 - **US macro read-through:** what this basket implies for growth/inflation cycle
-- **Actionable alpha:** 5–10 tradeable observations with confidence tags [High]/[Med]/[Low]
+- **Actionable alpha:** 5–10 tradeable observations, each backed by **2+ independent signals**, with confidence tags [High]/[Med]/[Low]
 
 ### 13) Bottom Line (PM Decision Layer)
 Provide:
@@ -155,7 +175,10 @@ Provide:
 - Target length: **900–1500 words**
 - Crisp, information-dense, no generic textbook explanations
 - Prefer bullets over long paragraphs
-- Use confidence tags: **[High] [Med] [Low]**
+- Use confidence tags with explicit thresholds:
+  - **[High]** = 3+ independent confirming signals
+  - **[Med]** = 2 independent confirming signals
+  - **[Low]** = 1 signal or mostly inferential/speculative
 - Mark unverified claims explicitly
 - No moralizing/disclaimers unless essential to risk framing
 
