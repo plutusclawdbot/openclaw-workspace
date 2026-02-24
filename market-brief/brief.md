@@ -16,7 +16,7 @@ Write in a **direct, high-conviction, PM-ready** style:
 
 ---
 
-## Output Format (Required)
+## Output Format
 
 ### Global Output Rules (Apply to all sections)
 - Use this bullet schema whenever possible: **Fact → Why it matters → Trade implication**
@@ -58,7 +58,7 @@ List 5–10 specific shifts:
 - Top 3 downside risks
 - Explicit trigger levels/events where possible
 
-### 7) Polymarket Signal Check (Required)
+### 7) Polymarket Signal Check
 Run this CLI query and summarize notable signal from top markets (with liquidity filter + event dedupe):
 
 ```bash
@@ -85,7 +85,7 @@ Then provide:
 - 3–5 interpretation bullets: what this flow implies about attention/risk narrative
 - Flag when market activity is event-driven noise vs durable macro signal
 
-### 8) CT Sentiment & Alpha Scan (Required)
+### 8) CT Sentiment & Alpha Scan
 Pull latest **100 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) and analyze:
 
 ```bash
@@ -109,7 +109,7 @@ Then provide:
 - 10–15 high-signal catalysts (data, central bank, auctions, geopolitics, earnings clusters)
 - For each: expected market sensitivity and likely cross-asset reaction map
 
-### 10) Pending Economic Indicators (Week Ahead) (Required)
+### 10) Pending Economic Indicators (Week Ahead)
 Include a compact forward calendar for the next 7 days:
 - Date/time (Europe/London)
 - Country/region
@@ -145,10 +145,10 @@ When relevant, provide:
   - confidence tags [High]/[Med]/[Low]
 - Distinguish **signal vs noise/hot takes**
 
-### 12) Earnings Transcript Signal (Required)
+### 12) Earnings Transcript Signal
 Pull and analyze latest earnings-call transcripts for the most systemically important US companies.
 
-**Recency rule (required):** only include companies whose latest earnings report/transcript is within the last **7 calendar days** at runtime. If a company’s latest earnings is older than 7 days, **exclude it** from detailed analysis in this section.
+**Recency rule:** only include companies whose latest earnings report/transcript is within the last **7 calendar days** at runtime. If a company’s latest earnings is older than 7 days, **exclude it** from detailed analysis in this section.
 
 Default coverage basket (unless overridden):
 - **Mega-cap core:** AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA
@@ -157,7 +157,7 @@ Default coverage basket (unless overridden):
 Apply the 7-day recency filter first; analyze only the qualifying names from this basket.
 If none qualify, write: `No qualifying earnings transcripts in last 7 days` and skip company-level bullets.
 
-**Forward earnings watch (required):** check the same basket for earnings dates in the next **14 calendar days**. If any are upcoming, add a short block:
+**Forward earnings watch:** check the same basket for earnings dates in the next **14 calendar days**. If any are upcoming, add a short block:
 - `Watch out for upcoming earnings (next 14 days):`
 - Company name + expected date
 - One-line why it matters for markets/positioning
@@ -165,7 +165,7 @@ If none qualify, write: `No qualifying earnings transcripts in last 7 days` and 
 For each company, provide:
 - Company + quarter/date of transcript
 - 3–5 management takeaways (demand, pricing, margins, capex, guidance)
-- **Change vs last quarter (Required):** what materially changed in management tone, guidance, demand commentary, or capex plans
+- **Change vs last quarter:** what materially changed in management tone, guidance, demand commentary, or capex plans
 - Tone score: Bullish / Neutral / Bearish
 - Commentary tags: growth, inflation, labor, consumer health, enterprise spend, AI capex, credit stress
 - One-line market implication
