@@ -123,22 +123,25 @@ Output format:
 - Mark **high-impact** releases with `🔥`
 - Add one final line: `Most market-moving window this week: ...`
 
-### 11) Podcast Signal Check (Required)
-Analyze selected podcasts for market-relevant signal.
+### 11) Podcast Signal Check (Conditional)
+Check selected podcasts for market-relevant signal.
 
 Start with:
 - **All-In Podcast (latest episode)**
 
-For each episode analyzed, provide:
+Include this section in the final brief **only if** the episode contains materially relevant market signal.
+If not relevant, write one line only: `Podcast check: no material market-relevant signal today.`
+
+When relevant, provide:
 - Episode title + publication date
-- 5–10 key points
+- 3–7 key points (signal only)
 - Market commentary extraction:
   - macro view
   - rates/inflation view
   - equities/tech view
   - crypto/AI/policy implications
 - Actionable alpha:
-  - 3–5 tradeable takeaways
+  - 1–3 tradeable takeaways
   - confidence tags [High]/[Med]/[Low]
 - Distinguish **signal vs noise/hot takes**
 
