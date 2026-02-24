@@ -8,6 +8,15 @@ _Learn about the person you're helping. Update this as you go._
 - **Timezone:** Europe/London
 - **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction). Prefers workspace saves to be committed and pushed by default. Daily memory files (`memory/YYYY-MM-DD.md`) can be updated locally, but should not be committed/pushed to GitHub unless explicitly requested.
 
+## Working Preferences
+
+- **Interaction mode:** fast
+- **Output style:** concise
+- **Behavior:** proactive next steps
+- **Autonomy:** high for internal low-risk actions
+- **Ask first for:** external, destructive, or sensitive actions
+- **Confirmations:** keep to one short line
+
 ## Context
 
 _(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_

@@ -87,3 +87,11 @@ Decision rule:
 - primary LAN IP: `192.168.1.240` (en0)
 - alt LAN IP: `192.168.1.31` (en1)
 - quick connect: `ssh plutusclawdbot@192.168.1.240`
+
+### Setup Snapshot
+
+- GitHub account: `plutusclawdbot`
+- Workspace repo: `https://github.com/plutusclawdbot/openclaw-workspace`
+- Auth flow: `gh auth login -h github.com -p https -w`
+- Core tooling in use: `gh`, `git`, `bird`, OpenClaw
+- Secrets policy: keep API keys/tokens in local env/config only (never in repo)
