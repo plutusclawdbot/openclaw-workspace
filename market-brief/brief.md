@@ -54,8 +54,8 @@ List 5–10 specific shifts:
 - Observable confirmation signal
 
 ### 6) Risk Radar
-- Top 5 upside risks
-- Top 5 downside risks
+- Top 3 upside risks
+- Top 3 downside risks
 - Explicit trigger levels/events where possible
 
 ### 7) Polymarket Signal Check (Required)
