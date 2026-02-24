@@ -34,7 +34,7 @@ Write in a **direct, high-conviction, PM-ready** style:
 - Confidence level: High / Medium / Low
 
 ### 3) Cross-Asset Read
-Cover these with 2–5 bullets each:
+Cover these with **2–3 bullets each (hard cap)**:
 - **Rates** (front-end, long-end, curve, real yields, implied policy path)
 - **FX** (USD broad, key crosses, EM stress signals)
 - **Equities** (index internals, breadth, leadership, cyclicals vs defensives)
