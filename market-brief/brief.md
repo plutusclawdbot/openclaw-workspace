@@ -145,9 +145,14 @@ For each episode analyzed, provide:
 ### 12) Earnings Transcript Signal (Required)
 Pull and analyze latest earnings-call transcripts for the most systemically important US companies.
 
+**Recency rule (required):** only include companies whose latest earnings report/transcript is within the last **7 calendar days** at runtime. If a company’s latest earnings is older than 7 days, **exclude it** from detailed analysis in this section.
+
 Default coverage basket (unless overridden):
 - **Mega-cap core:** AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA
 - **Macro bellwethers:** JPM, UNH, XOM, WMT
+
+Apply the 7-day recency filter first; analyze only the qualifying names from this basket.
+If none qualify, write: `No qualifying earnings transcripts in last 7 days` and skip company-level bullets.
 
 For each company, provide:
 - Company + quarter/date of transcript
