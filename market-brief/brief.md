@@ -154,6 +154,11 @@ Default coverage basket (unless overridden):
 Apply the 7-day recency filter first; analyze only the qualifying names from this basket.
 If none qualify, write: `No qualifying earnings transcripts in last 7 days` and skip company-level bullets.
 
+**Forward earnings watch (required):** check the same basket for earnings dates in the next **14 calendar days**. If any are upcoming, add a short block:
+- `Watch out for upcoming earnings (next 14 days):`
+- Company name + expected date
+- One-line why it matters for markets/positioning
+
 For each company, provide:
 - Company + quarter/date of transcript
 - 3–5 management takeaways (demand, pricing, margins, capex, guidance)
