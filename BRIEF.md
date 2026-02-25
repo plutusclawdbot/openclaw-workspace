@@ -80,21 +80,6 @@ done \
             | "EVENT|\(.title)|\(.id)|\(.slug)|\(.vtot|floor)"'
 ```
 
-And include a **financial-only market snapshot** (broader macro + crypto + policy-finance): top 5 by 24h volume.
-
-```bash
-polymarket -o json markets list --active true --closed false --limit 5000 \
-| jq -r '[.[]
-          | . + {v24: ((.volume24hr // "0")|tonumber)}
-          | select((.question // "")
-                   | ascii_downcase
-                   | test("bitcoin| btc|ethereum|eth|solana|xrp|fed|interest rate|rates|inflation|recession|market cap|stock|treasury|oil|gold|silver|presidential nomination|presidential election|prime minister"))
-        ]
-        | sort_by(.v24) | reverse | .[:5]
-        | to_entries[]
-        | "\(.key+1). \(.value.question)\n   24h vol: $\(.value.v24|floor) | slug: \(.value.slug)"'
-```
-
 For each event ID above, fetch top 3 options by implied probability (%):
 
 ```bash
