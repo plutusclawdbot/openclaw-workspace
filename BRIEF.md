@@ -59,31 +59,64 @@ List 5–10 specific shifts:
 - Explicit trigger levels/events where possible
 
 ### 7) Polymarket Signal Check
-Run this CLI query and summarize notable signal from top markets (with liquidity filter + event dedupe):
+Use **event-level** flow (not market-level only) and include option probabilities.
+
+Primary query (top 10 events by 24h volume, liquidity filter):
 
 ```bash
-polymarket -o json markets list --active true --closed false --limit 1000 --order volume \
-| jq '[ .[]
-        | { question, slug,
-            event_slug: (.events[0].slug // .slug),
-            v24: ((.volume24hr // "0")|tonumber),
-            liq: ((.liquidity // "0")|tonumber) }
-        | select(.liq >= 250000)
-      ]
-      | group_by(.event_slug)
-      | map({
-          event: .[0].event_slug,
-          volume24h: (map(.v24) | add),
-          liquidity_max: (map(.liq) | max),
-          sample_markets: (map(.question)[:3])
-        })
-      | sort_by(.volume24h) | reverse | .[:10]'
+# CLI-only version (paginated) to avoid first-page bias.
+for o in 0 500 1000 1500 2000 2500 3000 3500 4000 4500; do
+  polymarket -o json events list --active true --closed false --limit 500 --offset "$o"
+done \
+| jq -s -r 'map(.[]) | unique_by(.id)
+            | map(. + {
+                v24: ((.volume24hr // "0")|tonumber),
+                liq: ((.liquidity // "0")|tonumber),
+                vtot: ((.volume // "0")|tonumber)
+              })
+            | map(select(.liq >= 500000))
+            | sort_by(.v24) | reverse | .[:10]
+            | .[]
+            | "EVENT|\(.title)|\(.id)|\(.slug)|\(.vtot|floor)"'
 ```
 
+And include a **financial-only market snapshot** (broader macro + crypto + policy-finance): top 5 by 24h volume.
+
+```bash
+polymarket -o json markets list --active true --closed false --limit 5000 \
+| jq -r '[.[]
+          | . + {v24: ((.volume24hr // "0")|tonumber)}
+          | select((.question // "")
+                   | ascii_downcase
+                   | test("bitcoin| btc|ethereum|eth|solana|xrp|fed|interest rate|rates|inflation|recession|market cap|stock|treasury|oil|gold|silver|presidential nomination|presidential election|prime minister"))
+        ]
+        | sort_by(.v24) | reverse | .[:5]
+        | to_entries[]
+        | "\(.key+1). \(.value.question)\n   24h vol: $\(.value.v24|floor) | slug: \(.value.slug)"'
+```
+
+For each event ID above, fetch top 3 options by implied probability (%):
+
+```bash
+polymarket -o json events get <EVENT_ID> \
+| jq -r '.markets
+         | map(. + {
+             yes: ((.outcomePrices
+                    | if type=="string" then (fromjson? // []) else (. // []) end
+                    | .[0] // "0") | tonumber * 100)
+           })
+         | sort_by(.yes) | reverse | .[:3]
+         | .[]
+         | "- \(.question) | \((.yes*100|round/100))%"'
+```
+
+Output format:
+- `Event title ($X total vol)`
+- Top 3 options under each event as `%` only (no volume/liquidity clutter in option lines)
+
 Then provide:
-- Top 10 **deduped events** by 24h volume (clean list)
 - 3–5 interpretation bullets: what this flow implies about attention/risk narrative
-- Flag when market activity is event-driven noise vs durable macro signal
+- Flag when activity is event-driven noise vs durable macro signal
 
 ### 8) CT Sentiment & Alpha Scan
 Pull latest **100 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) and analyze:
