@@ -13,6 +13,7 @@ _Learn about the person you're helping. Update this as you go._
 - **Interaction mode:** fast
 - **Output style:** concise
 - **Behavior:** proactive next steps
+- **Browser hygiene:** close tabs after browser tasks to save memory
 - **Autonomy:** high for internal low-risk actions
 - **Ask first for:** external, destructive, or sensitive actions
 - **Confirmations:** keep to one short line
