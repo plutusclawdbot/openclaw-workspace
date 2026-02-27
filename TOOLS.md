@@ -95,3 +95,13 @@ Decision rule:
 - Auth flow: `gh auth login -h github.com -p https -w`
 - Core tooling in use: `gh`, `git`, `bird`, OpenClaw
 - Secrets policy: keep API keys/tokens in local env/config only (never in repo)
+
+### Telegram + ElevenLabs (current)
+
+- Telegram bot/channel is connected and running (`@plutus_ai_bot`).
+- OpenClaw TTS default provider is set to `elevenlabs`.
+- Preferred cloned voice: `Marie` (`ahzdc6SZnH3BCKQm2VFT`).
+- Recent validation target chat id: `2069147093`.
+- Quick checks:
+  - `openclaw channels status --probe`
+  - `openclaw gateway call tts.status --json`
