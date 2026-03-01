@@ -1,0 +1,2621 @@
+{
+  "id": "2027744530124951831",
+  "text": "How to Simulate Like a Quant Desk. Every Model, Every Formula, Runnable Code\n\nThis isn't a list of techniques.\n\nIt's a story - one that starts with a coin flip and ends with institutional-grade simulation engines.\n\nEach section builds on the last. Skip ahead and the math won't make sense. Read it in order and by the end you'll have runnable code for every layer of the stack.\n\nDisclaimer:\nNot Financial Advice & Do Your Own Research\n\n## Part I: The Coin Flip That Breaks Everything\n\nYou're staring at a Polymarket contract. \"Will the Fed cut rates in March?\" YES is trading at $0.62.\n\nYour instinct says: that's a 62% probability. Maybe you think it should be 70%. So you buy.\n\nCongratulations. You just did what every retail trader does. You treated a prediction market contract like a coin flip with a known bias, estimated your own bias, and bet the difference.\n\n- You have no idea how confident to be in your 70% estimate.\n\n- You don't know how it should change when tomorrow's jobs report drops.\n\n- You don't know how it correlates with the six other Fed-related contracts on Polymarket.\n\n- You don't know whether the price path between now and resolution will let you exit at a profit even if you're eventually right.\n\nA coin flip has one parameter: p.\n\nA prediction market contract embedded in a portfolio of correlated events, with time-varying information flow, order book dynamics, and execution risk, has dozens.\n\n## Part II: Monte Carlo. The Foundation Nobody Respects Enough\n\nEvery simulation in this article ultimately reduces to Monte Carlo: draw samples from a distribution, compute a statistic, repeat.\n\nThe estimator for event probability p=P(A) is just the sample mean:\n\nThe Central Limit Theorem gives you the convergence rate: O(N^{-1/2}, with variance Var(p^_N)=p(1−p)/N.\n\nThe variance is maximized at p=0.5p A contract trading at 50 cents the most uncertain, most actively traded contract on the platform is exactly where your Monte Carlo estimates are least precise.\n\nTo hit ±0.01 precision at 95% confidence when p=0.50:\n\nThat's manageable. But it gets worse fast when you need to simulate paths, not just endpoints.\n\nYour First Runnable Simulation\n\nGoal: Estimate the probability that an asset-linked binary contract pays off (e.g., \"Will AAPL close above $200 by March 15?\")\n\n```python\nimport numpy as np\n\ndef simulate_binary_contract(S0, K, mu, sigma, T, N_paths=100_000):\n    \"\"\"\n    Monte Carlo simulation for a binary contract.\n    \n    S0:    Current asset price\n    K:     Strike / threshold\n    mu:    Annual drift\n    sigma: Annual volatility\n    T:     Time to expiry in years\n    N_paths: Number of simulated paths\n    \"\"\"\n    # Simulate terminal prices via GBM\n    Z = np.random.standard_normal(N_paths)\n    S_T = S0 * np.exp((mu - 0.5 * sigma**2) * T + sigma * np.sqrt(T) * Z)\n    \n    # Binary payoff\n    payoffs = (S_T > K).astype(float)\n    \n    # Estimate and confidence interval\n    p_hat = payoffs.mean()\n    se = np.sqrt(p_hat * (1 - p_hat) / N_paths)\n    ci_lower = p_hat - 1.96 * se\n    ci_upper = p_hat + 1.96 * se\n    \n    return {\n        'probability': p_hat,\n        'std_error': se,\n        'ci_95': (ci_lower, ci_upper),\n        'N_paths': N_paths\n    }\n\n# Example: AAPL at $195, strike $200, 20% vol, 30 days\nresult = simulate_binary_contract(S0=195, K=200, mu=0.08, sigma=0.20, T=30/365)\nprint(f\"P(AAPL > $200) ≈ {result['probability']:.4f}\")\nprint(f\"95% CI: ({result['ci_95'][0]:.4f}, {result['ci_95'][1]:.4f})\")\n```\n\nThis works. For one contract, with one underlying, assuming lognormal dynamics. Real prediction markets break every one of those assumptions.\n\nEvaluating Your Simulation\n\nBefore we improve the simulation, we need a way to measure how good it is. The Brier Score is the standard calibration metric:\n\n```python\ndef brier_score(predictions, outcomes):\n    \"\"\"Evaluate simulation calibration.\"\"\"\n    return np.mean((np.array(predictions) - np.array(outcomes))**2)\n\n# Compare two models\nmodel_A_preds = [0.7, 0.3, 0.9, 0.1]  # sharp, confident\nmodel_B_preds = [0.5, 0.5, 0.5, 0.5]  # always uncertain\nactual_outcomes = [1, 0, 1, 0]\n\nprint(f\"Model A Brier: {brier_score(model_A_preds, actual_outcomes):.4f}\")  # 0.05\nprint(f\"Model B Brier: {brier_score(model_B_preds, actual_outcomes):.4f}\")  # 0.25\n```\n\nA Brier score below 0.20 is good.\n\nBelow 0.10 is excellent.\n\nThe best election forecasters (538, Economist) historically achieve 0.06-0.12 on presidential races.\n\nIf your simulation can beat that, you have edge.\n\n## Part III: When 100,000 Samples Aren't Enough\n\nNow the story escalates.\n\nPolymarket hosts contracts on extreme events. \"Will the S&P 500 drop 20% in one week?\" is trading at $0.003. With crude Monte Carlo at 100,000 samples, you might see zero or one hit.\n\nYour estimate is either 0.00000 or 0.00001 - both useless.\n\nThis isn't a theoretical problem. It's the reason most retail traders can't properly evaluate tail-risk contracts.\n\nMake Rare Events Common\n\nImportance sampling replaces the original probability measure with one that oversamples the rare region, then corrects the bias with a likelihood\n\nLikelihood ratio or Radon-Nikodym derivative\n\nNot useful directly, but it tells you what to aim for.\n\nThe practical workhorse is exponential tilting.\n\nIf your underlying follows a random walk with increments Δ_ihaving moment generating function M(γ)=E[e^γΔ], you tilt the distribution:\n\nchoosing γ to make the rare event typical. For a contract that pays off when a sum exceeds a large threshold, γ solves the Lundberg equation M(γ)=1.\n\nImportance Sampling for Tail-Risk Contracts\n\n```python\ndef rare_event_IS(S0, K_crash, sigma, T, N_paths=100_000):\n    \"\"\"\n    Importance sampling for extreme downside binary contracts.\n    \n    Example: P(S&P drops 20% in one week)\n    \"\"\"\n    K = S0 * (1 - K_crash)  # e.g., 20% crash threshold\n    \n    # Original drift (risk-neutral)\n    mu_original = -0.5 * sigma**2\n    \n    # Tilted drift: shift the mean toward the crash region\n    # Choose mu_tilt so the crash threshold is ~1 std dev away instead of ~4\n    log_threshold = np.log(K / S0)\n    mu_tilt = log_threshold / T  # center the distribution on the crash\n    \n    Z = np.random.standard_normal(N_paths)\n    \n    # Simulate under TILTED measure\n    log_returns_tilted = mu_tilt * T + sigma * np.sqrt(T) * Z\n    S_T_tilted = S0 * np.exp(log_returns_tilted)\n    \n    # Likelihood ratio: original density / tilted density\n    log_returns_original = mu_original * T + sigma * np.sqrt(T) * Z\n    log_LR = (\n        -0.5 * ((log_returns_tilted - mu_original * T) / (sigma * np.sqrt(T)))**2\n        + 0.5 * ((log_returns_tilted - mu_tilt * T) / (sigma * np.sqrt(T)))**2\n    )\n    LR = np.exp(log_LR)\n    \n    # IS estimator\n    payoffs = (S_T_tilted < K).astype(float)\n    is_estimates = payoffs * LR\n    \n    p_IS = is_estimates.mean()\n    se_IS = is_estimates.std() / np.sqrt(N_paths)\n    \n    # Compare with crude MC\n    Z_crude = np.random.standard_normal(N_paths)\n    S_T_crude = S0 * np.exp(mu_original * T + sigma * np.sqrt(T) * Z_crude)\n    p_crude = (S_T_crude < K).mean()\n    se_crude = np.sqrt(p_crude * (1 - p_crude) / N_paths) if p_crude > 0 else float('inf')\n    \n    return {\n        'p_IS': p_IS, 'se_IS': se_IS,\n        'p_crude': p_crude, 'se_crude': se_crude,\n        'variance_reduction': (se_crude / se_IS)**2 if se_IS > 0 else float('inf')\n    }\n\nresult = rare_event_IS(S0=5000, K_crash=0.20, sigma=0.15, T=5/252)\nprint(f\"IS estimate:    {result['p_IS']:.6f} ± {result['se_IS']:.6f}\")\nprint(f\"Crude estimate: {result['p_crude']:.6f} ± {result['se_crude']:.6f}\")\nprint(f\"Variance reduction factor: {result['variance_reduction']:.1f}x\")\n```\n\nOn extreme contracts, IS can reduce variance by factors of 100–10,000x.\n\nThis means 100 IS samples give better precision than 1,000,000 crude samples.\n\nThat's not a marginal improvement. It's the difference between \"we can't price this\" and \"we're trading it.\"\n\n## Part IV: Sequential Monte Carlo for Real-Time Updating\n\nBut what I need to do while the story shifts from static estimation to dynamic simulation?\n\nImagine:\nIt's election night. 8:01 PM EST. Florida polls just closed. Early returns show a 3-point shift toward one candidate.\n\nYour model needs to update instantly incorporating this new data point into the probability estimate for not just Florida, but Ohio, Pennsylvania, Michigan, and every correlated state.\n\nThis is the filtering problem, and the tool is Sequential Monte Carlo  particle filters.\n\nThe State-Space Model\n\nDefine:\n\n- Hidden state x_t​: the \"true\" probability of the event (unobserved)\n\n- Observation y_t: market prices, poll results, vote counts, news signals\n\nThe state evolves via a logit random walk (keeps probabilities bounded):\n\nObservations are noisy readings of the true state:\n\nThe Bootstrap Particle Filter\n\nThe algorithm maintains N \"particles\" - each one a hypothesis about the true probability and reweights them as data arrives:\n\n```\n1. INITIALIZE: Draw x_0^{(i)} ~ Prior  for i = 1,...,N\n   Set weights w_0^{(i)} = 1/N\n\n2. FOR each new observation y_t:\n   a. PROPAGATE:  x_t^{(i)} ~ f( · | x_{t-1}^{(i)} )\n   b. REWEIGHT:   w_t^{(i)} ∝ g( y_t | x_t^{(i)} )  \n   c. NORMALIZE:  w̃_t^{(i)} = w_t^{(i)} / Σ_j w_t^{(j)}\n   d. RESAMPLE if ESS = 1/Σ(w̃_t^{(i)})² < N/2\n```\n\nParticle Filter for a Live Prediction Market\n\n```python\nimport numpy as np\nfrom scipy.special import expit, logit  # sigmoid and logit\n\nclass PredictionMarketParticleFilter:\n    \"\"\"\n    Sequential Monte Carlo filter for real-time event probability estimation.\n    \n    Usage during a live event (e.g., election night):\n        pf = PredictionMarketParticleFilter(prior_prob=0.50)\n        pf.update(observed_price=0.55)   # market moves on early returns\n        pf.update(observed_price=0.62)   # more data\n        pf.update(observed_price=0.58)   # partial correction\n        print(pf.estimate())             # filtered probability\n    \"\"\"\n    def __init__(self, N_particles=5000, prior_prob=0.5,\n                 process_vol=0.05, obs_noise=0.03):\n        self.N = N_particles\n        self.process_vol = process_vol\n        self.obs_noise = obs_noise\n        \n        # Initialize particles around prior\n        logit_prior = logit(prior_prob)\n        self.logit_particles = logit_prior + np.random.normal(0, 0.5, N_particles)\n        self.weights = np.ones(N_particles) / N_particles\n        self.history = []\n    \n    def update(self, observed_price):\n        \"\"\"Incorporate a new observation (market price, poll result, etc.)\"\"\"\n        # 1. Propagate: random walk in logit space\n        noise = np.random.normal(0, self.process_vol, self.N)\n        self.logit_particles += noise\n        \n        # 2. Convert to probability space\n        prob_particles = expit(self.logit_particles)\n        \n        # 3. Reweight: likelihood of observation given each particle\n        log_likelihood = -0.5 * ((observed_price - prob_particles) / self.obs_noise)**2\n        log_weights = np.log(self.weights + 1e-300) + log_likelihood\n        \n        # Normalize in log space for stability\n        log_weights -= log_weights.max()\n        self.weights = np.exp(log_weights)\n        self.weights /= self.weights.sum()\n        \n        # 4. Check ESS and resample if needed\n        ess = 1.0 / np.sum(self.weights**2)\n        if ess < self.N / 2:\n            self._systematic_resample()\n        \n        self.history.append(self.estimate())\n    \n    def _systematic_resample(self):\n        \"\"\"Systematic resampling - lower variance than multinomial.\"\"\"\n        cumsum = np.cumsum(self.weights)\n        u = (np.arange(self.N) + np.random.uniform()) / self.N\n        indices = np.searchsorted(cumsum, u)\n        self.logit_particles = self.logit_particles[indices]\n        self.weights = np.ones(self.N) / self.N\n    \n    def estimate(self):\n        \"\"\"Weighted mean probability estimate.\"\"\"\n        probs = expit(self.logit_particles)\n        return np.average(probs, weights=self.weights)\n    \n    def credible_interval(self, alpha=0.05):\n        \"\"\"Weighted quantile-based credible interval.\"\"\"\n        probs = expit(self.logit_particles)\n        sorted_idx = np.argsort(probs)\n        sorted_probs = probs[sorted_idx]\n        sorted_weights = self.weights[sorted_idx]\n        cumw = np.cumsum(sorted_weights)\n        lower = sorted_probs[np.searchsorted(cumw, alpha/2)]\n        upper = sorted_probs[np.searchsorted(cumw, 1 - alpha/2)]\n        return lower, upper\n\n# --- Simulate election night ---\npf = PredictionMarketParticleFilter(prior_prob=0.50, process_vol=0.03)\n\n# Incoming observations (market prices as new data arrives)\nobservations = [0.50, 0.52, 0.55, 0.58, 0.61, 0.63, 0.60, \n                0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]\n\nprint(\"Election Night Tracker:\")\nprint(f\"{'Time':>6}  {'Observed':>10}  {'Filtered':>10}  {'95% CI':>20}\")\nprint(\"-\" * 52)\n\nfor t, obs in enumerate(observations):\n    pf.update(obs)\n    ci = pf.credible_interval()\n    print(f\"{t:>5}h  {obs:>10.3f}  {pf.estimate():>10.3f}  ({ci[0]:.3f}, {ci[1]:.3f})\")\n```\n\nWhy is this better than just using the market price directly?\n\nBecause the particle filter smooths noise and propagates uncertainty.\n\nWhen the market spikes from $0.58 to $0.65 on a single trade, the filter recognizes that the true probability might not have changed that much it tempers the update based on how volatile the observation process has been.\n\n## Part V: Three Variance Reduction Tricks That Stack\n\nBefore we leave Monte Carlo territory, here are three techniques that combine multiplicatively with everything above.\n\nFree Symmetry\n\nWhen the payoff function is monotone (which binary contracts always are higher prices mean higher probability of exceeding the strike), the variance reduction is guaranteed:\n\nTypical reduction is around 50-75%. Zero extra computational cost beyond doubling the function evaluations (which you were going to do anyway).\n\nExploit What You Already Know\n\nIf you're simulating a binary contract {S_T > K} under stochastic volatility (no closed form), use the Black-Scholes digital price p_{BS}​ (which has a closed form) as a control variate:\n\nDivide and Conquer\n\nPartition the probability space into JJ J strata, sample within each, combine. The variance is always ≤ crude MC (by the law of total variance), with maximum gain from Neyman allocation: nj∝ωjσj​ (oversample strata with high variance).\n\n```python\ndef stratified_binary_mc(S0, K, sigma, T, J=10, N_total=100_000):\n    \"\"\"\n    Stratified MC for binary contract pricing.\n    Strata defined by quantiles of the terminal price distribution.\n    \"\"\"\n    n_per_stratum = N_total // J\n    estimates = []\n    \n    for j in range(J):\n        # Uniform draws within stratum [j/J, (j+1)/J]\n        U = np.random.uniform(j/J, (j+1)/J, n_per_stratum)\n        Z = norm.ppf(U)\n        S_T = S0 * np.exp((-0.5*sigma**2)*T + sigma*np.sqrt(T)*Z)\n        stratum_mean = (S_T > K).mean()\n        estimates.append(stratum_mean)\n    \n    # Each stratum has weight 1/J\n    p_stratified = np.mean(estimates)\n    se_stratified = np.std(estimates) / np.sqrt(J)\n    \n    return p_stratified, se_stratified\n\np, se = stratified_binary_mc(S0=100, K=105, sigma=0.20, T=30/365)\nprint(f\"Stratified estimate: {p:.6f} ± {se:.6f}\")\n```\n\nStack all three\n\nAntithetic variates inside each stratum, with a control variate correction and you routinely achieve 100–500x variance reduction over crude MC. This is not optional in production. This is table stakes.\n\n## Part VI: Modeling What Correlation Matrices Can't\n\nThe hierarchical Bayesian model implicitly encodes correlation through the shared national swing parameter.\n\nBut what about tail dependence - the tendency for extreme co-movements that don't show up in linear correlation?\n\nIn 2008, the Gaussian copula's failure to model tail dependence contributed to the global financial crisis. In prediction markets, the same issue arises: when one swing state has a surprise result, the probability that all swing states flip together is much higher than a Gaussian copula would predict.\n\nSklar's Theorem\n\nwhere C is the copula (the pure dependency structure) and F_i​ are the marginal CDFs. You can model each market's marginal behavior separately, then glue them together with a copula that captures the dependency including in the tails.\n\nThe Tail Dependence Problem\n\nGaussian copula: Tail dependence λU=λL=0. Extreme co-movements are modeled as having zero probability.\n\nThis is catastrophically wrong for correlated prediction markets.\n\nStudent-t copula\n\nWith ν=4 and ρ=0.6, tail dependence is approximately 0.18 -z an 18% probability that extreme co-movement occurs given one contract hits an extreme. Gaussian would say 0%.\n\nClayton copula: Lower tail dependence only (λL=2^−1/θ. When one prediction market crashes, others follow. No upper tail dependence.\n\nGumbel copula: Upper tail dependence only (λU​=2−2^1/θ). Correlated positive resolutions.\n\nSimulating Correlated Prediction Market Outcomes\n\n```python\nimport numpy as np\nfrom scipy.stats import norm, t as t_dist\n\ndef simulate_correlated_outcomes_gaussian(probs, corr_matrix, N=100_000):\n    \"\"\"Gaussian copula no tail dependence.\"\"\"\n    d = len(probs)\n    L = np.linalg.cholesky(corr_matrix)\n    Z = np.random.standard_normal((N, d))\n    X = Z @ L.T\n    U = norm.cdf(X)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\ndef simulate_correlated_outcomes_t(probs, corr_matrix, nu=4, N=100_000):\n    \"\"\"Student-t copula symmetric tail dependence.\"\"\"\n    d = len(probs)\n    L = np.linalg.cholesky(corr_matrix)\n    Z = np.random.standard_normal((N, d))\n    X = Z @ L.T\n    \n    # Divide by sqrt(chi-squared / nu) to get t-distributed\n    S = np.random.chisquare(nu, N) / nu\n    T = X / np.sqrt(S[:, None])\n    U = t_dist.cdf(T, nu)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\ndef simulate_correlated_outcomes_clayton(probs, theta=2.0, N=100_000):\n    \"\"\"Clayton copula (bivariate) lower tail dependence.\"\"\"\n    # Marshall-Olkin algorithm\n    V = np.random.gamma(1/theta, 1, N)\n    E = np.random.exponential(1, (N, len(probs)))\n    U = (1 + E / V[:, None])**(-1/theta)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\n\n# --- Compare tail behavior ---\nprobs = [0.52, 0.53, 0.51, 0.48, 0.50]  # 5 swing state probabilities\nstate_names = ['PA', 'MI', 'WI', 'GA', 'AZ']\n\ncorr = np.array([\n    [1.0, 0.7, 0.7, 0.4, 0.3],\n    [0.7, 1.0, 0.8, 0.3, 0.3],\n    [0.7, 0.8, 1.0, 0.3, 0.3],\n    [0.4, 0.3, 0.3, 1.0, 0.5],\n    [0.3, 0.3, 0.3, 0.5, 1.0],\n])\n\nN = 500_000\n\ngauss_outcomes = simulate_correlated_outcomes_gaussian(probs, corr, N)\nt_outcomes = simulate_correlated_outcomes_t(probs, corr, nu=4, N=N)\n\n# P(sweep all 5 states)\np_sweep_gauss = gauss_outcomes.all(axis=1).mean()\np_sweep_t = t_outcomes.all(axis=1).mean()\n\n# P(lose all 5 states)  \np_lose_gauss = (1 - gauss_outcomes).all(axis=1).mean()\np_lose_t = (1 - t_outcomes).all(axis=1).mean()\n\n# If independent\np_sweep_indep = np.prod(probs)\np_lose_indep = np.prod([1-p for p in probs])\n\nprint(\"Joint Outcome Probabilities:\")\nprint(f\"{'':>25}  {'Independent':>12}  {'Gaussian':>12}  {'t-copula':>12}\")\nprint(f\"{'P(sweep all 5)':>25}  {p_sweep_indep:>12.4f}  {p_sweep_gauss:>12.4f}  {p_sweep_t:>12.4f}\")\nprint(f\"{'P(lose all 5)':>25}  {p_lose_indep:>12.4f}  {p_lose_gauss:>12.4f}  {p_lose_t:>12.4f}\")\nprint(f\"\\nt-copula increases sweep probability by {p_sweep_t/p_sweep_gauss:.1f}x vs Gaussian\")\n```\n\nThis is the exact reason the Gaussian copula failed in 2008 and would fail again for prediction market portfolios.\n\nThe t-copula with v = 4 routinely shows 2–5x higher probability of extreme joint outcomes.\n\nIf you're trading correlated prediction market contracts without modeling tail dependence, you're running a portfolio that will blow up in exactly the scenarios that matter most.\n\nVine Copula\n\nFor d>5 contracts, bivariate copulas are insufficient. Vine copulas decompose the dd d-dimensional dependency into d(d−1)/2 bivariate conditional copulas arranged in a tree structure:\n\n- C-vine (star): One central event drives everything (e.g., presidential winner -> all policy markets)\n\n- D-vine (path): Sequential dependencies (e.g., primary results flow into general election)\n\n- R-vine (general graph): Maximum flexibility\n\nbuild maximum spanning trees ordered by ∣τKendall∣, select pair-copula families via AIC, estimate sequentially. Implementations: pyvinecopulib (Python), VineCopula (R).\n\n## Part VII: Agent-Based Simulation\n\nEverything so far assumes you know the data-generating process and just need to simulate it.\n\nBut prediction markets are populated by heterogeneous agents - informed traders, noise traders, market makers, and bots whose interactions produce emergent dynamics that no closed-form SDE can capture.\n\nThe Zero-Intelligence Revelation\n\nMarkets can be efficient even when every single trader is completely irrational.\n\nGode & Sunder (1993) showed that zero-intelligence agents - traders who submit random orders subject only to budget constraints achieve near-100% allocative efficiency in a continuous double auction.\n\nFarmer, Patelli & Zovko (2005) extended this to limit order books.\n\nThis explained 96% of cross-sectional spread variation on the London Stock Exchange. One parameter. 96%.\n\nAgent-Based Prediction Market Simulator\n\n```python\nimport numpy as np\nfrom collections import deque\n\nclass PredictionMarketABM:\n    \"\"\"\n    Agent-based model of a prediction market order book.\n    \n    Agent types:\n    - Informed: know the true probability, trade toward it\n    - Noise: random trades\n    - Market maker: provides liquidity around current price\n    \"\"\"\n    def __init__(self, true_prob, n_informed=10, n_noise=50, n_mm=5):\n        self.true_prob = true_prob\n        self.price = 0.50  # initial price\n        self.price_history = [self.price]\n        \n        # Order book (simplified as bid/ask queues)\n        self.best_bid = 0.49\n        self.best_ask = 0.51\n        \n        # Agent populations\n        self.n_informed = n_informed\n        self.n_noise = n_noise\n        self.n_mm = n_mm\n        \n        # Track metrics\n        self.volume = 0\n        self.informed_pnl = 0\n        self.noise_pnl = 0\n    \n    def step(self):\n        \"\"\"One time step: randomly select an agent to trade.\"\"\"\n        total = self.n_informed + self.n_noise + self.n_mm\n        r = np.random.random()\n        \n        if r < self.n_informed / total:\n            self._informed_trade()\n        elif r < (self.n_informed + self.n_noise) / total:\n            self._noise_trade()\n        else:\n            self._mm_update()\n        \n        self.price_history.append(self.price)\n    \n    def _informed_trade(self):\n        \"\"\"Informed trader: buy if price < true_prob, sell otherwise.\"\"\"\n        signal = self.true_prob + np.random.normal(0, 0.02)  # noisy signal\n        \n        if signal > self.best_ask + 0.01:  # buy\n            size = min(0.1, abs(signal - self.price) * 2)\n            self.price += size * self._kyle_lambda()\n            self.volume += size\n            self.informed_pnl += (self.true_prob - self.best_ask) * size\n        elif signal < self.best_bid - 0.01:  # sell\n            size = min(0.1, abs(self.price - signal) * 2)\n            self.price -= size * self._kyle_lambda()\n            self.volume += size\n            self.informed_pnl += (self.best_bid - self.true_prob) * size\n        \n        self.price = np.clip(self.price, 0.01, 0.99)\n        self._update_book()\n    \n    def _noise_trade(self):\n        \"\"\"Noise trader: random buy/sell.\"\"\"\n        direction = np.random.choice([-1, 1])\n        size = np.random.exponential(0.02)\n        self.price += direction * size * self._kyle_lambda()\n        self.price = np.clip(self.price, 0.01, 0.99)\n        self.volume += size\n        self.noise_pnl -= abs(self.price - self.true_prob) * size * 0.5\n        self._update_book()\n    \n    def _mm_update(self):\n        \"\"\"Market maker: tighten spread toward current price.\"\"\"\n        spread = max(0.02, 0.05 * (1 - self.volume / 100))\n        self.best_bid = self.price - spread / 2\n        self.best_ask = self.price + spread / 2\n    \n    def _kyle_lambda(self):\n        \"\"\"Price impact parameter.\"\"\"\n        sigma_v = abs(self.true_prob - self.price) + 0.05\n        sigma_u = 0.1 * np.sqrt(self.n_noise)\n        return sigma_v / (2 * sigma_u)\n    \n    def _update_book(self):\n        spread = self.best_ask - self.best_bid\n        self.best_bid = self.price - spread / 2\n        self.best_ask = self.price + spread / 2\n    \n    def run(self, n_steps=1000):\n        for _ in range(n_steps):\n            self.step()\n        return np.array(self.price_history)\n\n\n# --- Simulation ---\nnp.random.seed(42)\n\n# Scenario: true probability is 0.65, market starts at 0.50\nsim = PredictionMarketABM(true_prob=0.65, n_informed=10, n_noise=50, n_mm=5)\nprices = sim.run(n_steps=2000)\n\nprint(\"Agent-Based Prediction Market Simulation\")\nprint(f\"True probability:   {sim.true_prob:.2f}\")\nprint(f\"Starting price:     0.50\")\nprint(f\"Final price:        {prices[-1]:.4f}\")\nprint(f\"Price at t=500:     {prices[500]:.4f}\")\nprint(f\"Price at t=1000:    {prices[1000]:.4f}\")\nprint(f\"Total volume:       {sim.volume:.1f}\")\nprint(f\"Informed P&L:       ${sim.informed_pnl:.2f}\")\nprint(f\"Noise trader P&L:   ${sim.noise_pnl:.2f}\")\nprint(f\"Convergence error:  {abs(prices[-1] - sim.true_prob):.4f}\")\n```\n\nHow fast prices converge depends on the ratio of informed to noise traders, how market maker spread responds to information flow, and why the informed traders extract profit at noise traders expense.\n\n## Part VIII: The Production Stack\n\nHere's the complete system, from market data to trade execution:\n\n- LAYER 1: DATA INGESTION\n- WebSocket feed from Polymarket CLOB API (real-time prices, volumes)\n- News/poll feeds (NLP-processed into probability signals)  \n- On-chain event data (Polygon)\n\n- LAYER 2: PROBABILITY ENGINE  \n- Hierarchical Bayesian model (Stan/PyMC) state-level posteriors\n- Particle filter real-time updating on new observations\n- Jump-diffusion SDE path simulation for risk management\n- Ensemble: weighted average of model outputs\n\n- LAYER 3: DEPENDENCY MODELING\n- Vine copula pairwise dependencies between contracts\n- Factor model shared national/global risk factors\n- Tail dependence estimation via t-copula\n\n- LAYER 4: RISK MANAGEMENT\n- EVT-based VaR and Expected Shortfall\n- Reverse stress testing identify worst-case scenarios\n- Correlation stress what if state correlations spike?\n - Liquidity risk order book depth monitoring\n\n- LAYER 5: MONITORING\n- Brier score tracking (are we calibrated?)\n- P&L attribution (which model component added value?)\n- Drawdown alerts\n- Model drift detection\n\n## References\n\n- Dalen (2025). \"Toward Black-Scholes for Prediction Markets.\" arXiv:2510.15205\n\n- Saguillo et al. (2025). \"Unravelling the Probabilistic Forest: Arbitrage in Prediction Markets.\" arXiv:2508.03474\n\n- Madrigal-Cianci et al. (2026). \"Prediction Markets as Bayesian Inverse Problems.\" arXiv:2601.18815\n\n- Farmer, Patelli & Zovko (2005). \"The Predictive Power of Zero Intelligence.\" PNAS\n\n- Gode & Sunder (1993). \"Allocative Efficiency of Markets with Zero-Intelligence Traders.\" JPE\n\n- Kyle (1985). \"Continuous Auctions and Insider Trading.\" Econometrica\n\n- Glosten & Milgrom (1985). \"Bid, Ask, and Transaction Prices.\" JFE\n\n- Hoffman & Gelman (2014). \"The No-U-Turn Sampler.\" JMLR\n\n- Merton (1976). \"Option Pricing When Underlying Stock Returns Are Discontinuous.\" JFE\n\n- Linzer (2013). \"Dynamic Bayesian Forecasting of Presidential Elections.\" JASA\n\n- Gelman et al. (2020). \"Updated Dynamic Bayesian Forecasting Model.\" HDSR\n\n- Aas, Czado, Frigessi & Bakken (2009). \"Pair-Copula Constructions of Multiple Dependence.\" Insurance: Mathematics and Economics\n\n- Wiese et al. (2020). \"Quant GANs: Deep Generation of Financial Time Series.\" Quantitative Finance\n\n- Kidger et al. (2021). \"Neural SDEs as Infinite-Dimensional GANs.\" ICML",
+  "createdAt": "Sat Feb 28 13:55:44 +0000 2026",
+  "replyCount": 19,
+  "retweetCount": 100,
+  "likeCount": 1302,
+  "conversationId": "2027744530124951831",
+  "author": {
+    "username": "gemchange_ltd",
+    "name": "gemchanger"
+  },
+  "authorId": "1888961106334334976",
+  "article": {
+    "title": "How to Simulate Like a Quant Desk. Every Model, Every Formula, Runnable Code",
+    "previewText": "This isn't a list of techniques.\nIt's a story - one that starts with a coin flip and ends with institutional-grade simulation engines.\nEach section builds on the last. Skip ahead and the math won't"
+  },
+  "_raw": {
+    "__typename": "Tweet",
+    "article": {
+      "article_results": {
+        "result": {
+          "content_state": {
+            "blocks": [
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "5dhbl",
+                "text": "This isn't a list of techniques.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "cuvmk",
+                "text": "It's a story - one that starts with a coin flip and ends with institutional-grade simulation engines.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6v8iq",
+                "text": "Each section builds on the last. Skip ahead and the math won't make sense. Read it in order and by the end you'll have runnable code for every layer of the stack.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 11,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 44,
+                    "offset": 12,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 56,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "6fit3",
+                "text": "Disclaimer:\nNot Financial Advice & Do Your Own Research\n",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6gvp0",
+                "text": "Part I: The Coin Flip That Breaks Everything",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bpbfv",
+                "text": "You're staring at a Polymarket contract. \"Will the Fed cut rates in March?\" YES is trading at $0.62.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e90np",
+                "text": "Your instinct says: that's a 62% probability. Maybe you think it should be 70%. So you buy.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "ei09u",
+                "text": "Congratulations. You just did what every retail trader does. You treated a prediction market contract like a coin flip with a known bias, estimated your own bias, and bet the difference.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e3sh8",
+                "text": "You have no idea how confident to be in your 70% estimate.",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "2hhp8",
+                "text": "You don't know how it should change when tomorrow's jobs report drops. ",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "3i0i8",
+                "text": "You don't know how it correlates with the six other Fed-related contracts on Polymarket.",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "2omcq",
+                "text": "You don't know whether the price path between now and resolution will let you exit at a profit even if you're eventually right.",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "34ebr",
+                "text": "A coin flip has one parameter: p.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "1gb06",
+                "text": "A prediction market contract embedded in a portfolio of correlated events, with time-varying information flow, order book dynamics, and execution risk, has dozens.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 7,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "2cvl1",
+                "text": "Part II: Monte Carlo. The Foundation Nobody Respects Enough",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "fsi9a",
+                "text": "Every simulation in this article ultimately reduces to Monte Carlo: draw samples from a distribution, compute a statistic, repeat.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "emd3",
+                "text": "The estimator for event probability p=P(A) is just the sample mean:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 0,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "7o47b",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "4hrpp",
+                "text": "The Central Limit Theorem gives you the convergence rate: O(N^{-1/2}, with variance Var(p^_N)=p(1−p)/N.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 34,
+                    "offset": 1,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "1n3d2",
+                "text": "The variance is maximized at p=0.5p A contract trading at 50 cents the most uncertain, most actively traded contract on the platform is exactly where your Monte Carlo estimates are least precise.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bvu8b",
+                "text": "To hit ±0.01 precision at 95% confidence when p=0.50:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 1,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "19a9s",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 5,
+                    "offset": 68,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "4j91s",
+                "text": "That's manageable. But it gets worse fast when you need to simulate paths, not just endpoints.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 2,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "4s3o",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 30,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 30,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "3oqtb",
+                "text": "Your First Runnable Simulation",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 5,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "9ro2h",
+                "text": "Goal: Estimate the probability that an asset-linked binary contract pays off (e.g., \"Will AAPL close above $200 by March 15?\")",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 3,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "61faf",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "d356k",
+                "text": "This works. For one contract, with one underlying, assuming lognormal dynamics. Real prediction markets break every one of those assumptions.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 26,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 26,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "5e16o",
+                "text": "Evaluating Your Simulation",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 11,
+                    "offset": 79,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "cuho0",
+                "text": "Before we improve the simulation, we need a way to measure how good it is. The Brier Score is the standard calibration metric:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 4,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "9u0iq",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 5,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "1pkcr",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "48l96",
+                "text": "A Brier score below 0.20 is good.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "5jvjo",
+                "text": "Below 0.10 is excellent.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e5ei",
+                "text": "The best election forecasters (538, Economist) historically achieve 0.06-0.12 on presidential races.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "84gg9",
+                "text": "If your simulation can beat that, you have edge.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 8,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "1ks5r",
+                "text": "Part III: When 100,000 Samples Aren't Enough",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "2udbu",
+                "text": "Now the story escalates.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "abhqp",
+                "text": "Polymarket hosts contracts on extreme events. \"Will the S&P 500 drop 20% in one week?\" is trading at $0.003. With crude Monte Carlo at 100,000 samples, you might see zero or one hit.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bgrq9",
+                "text": "Your estimate is either 0.00000 or 0.00001 - both useless.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "7g8tv",
+                "text": "This isn't a theoretical problem. It's the reason most retail traders can't properly evaluate tail-risk contracts.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 23,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 23,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "act2j",
+                "text": "Make Rare Events Common",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 19,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "16ah",
+                "text": "Importance sampling replaces the original probability measure with one that oversamples the rare region, then corrects the bias with a likelihood ",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 1,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "5f8k0",
+                "text": "Likelihood ratio or Radon-Nikodym derivative",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "a2vg1",
+                "text": "Not useful directly, but it tells you what to aim for.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 19,
+                    "offset": 27,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "b1gtr",
+                "text": "The practical workhorse is exponential tilting.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "aaavn",
+                "text": "If your underlying follows a random walk with increments Δ_ihaving moment generating function M(γ)=E[e^γΔ], you tilt the distribution:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 6,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "4gs07",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 18,
+                    "offset": 123,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "dftjj",
+                "text": "choosing γ to make the rare event typical. For a contract that pays off when a sum exceeds a large threshold, γ solves the Lundberg equation M(γ)=1.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 43,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 43,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "rr82",
+                "text": "Importance Sampling for Tail-Risk Contracts",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 7,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "blufn",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 22,
+                    "offset": 48,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "4tc7d",
+                "text": "On extreme contracts, IS can reduce variance by factors of 100–10,000x.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "duj3b",
+                "text": "This means 100 IS samples give better precision than 1,000,000 crude samples.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "a4mr6",
+                "text": "That's not a marginal improvement. It's the difference between \"we can't price this\" and \"we're trading it.\"",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "3o2g5",
+                "text": "Part IV: Sequential Monte Carlo for Real-Time Updating",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e95r4",
+                "text": "But what I need to do while the story shifts from static estimation to dynamic simulation?",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "8g34c",
+                "text": "Imagine:\nIt's election night. 8:01 PM EST. Florida polls just closed. Early returns show a 3-point shift toward one candidate.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 9,
+                    "offset": 27,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "9nbsk",
+                "text": "Your model needs to update instantly incorporating this new data point into the probability estimate for not just Florida, but Ohio, Pennsylvania, Michigan, and every correlated state.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 17,
+                    "offset": 12,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 22,
+                    "offset": 47,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "22v57",
+                "text": "This is the filtering problem, and the tool is Sequential Monte Carlo  particle filters.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "4pc90",
+                "text": "The State-Space Model",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "8vegg",
+                "text": "Define:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 12,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "bub3i",
+                "text": "Hidden state x_t​: the \"true\" probability of the event (unobserved)",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 11,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "c6524",
+                "text": "Observation y_t: market prices, poll results, vote counts, news signals",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 17,
+                    "offset": 24,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "4qsqm",
+                "text": "The state evolves via a logit random walk (keeps probabilities bounded):",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 8,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "9v21f",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e9hap",
+                "text": "Observations are noisy readings of the true state:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 9,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "5ssh7",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 29,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 29,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "122o2",
+                "text": "The Bootstrap Particle Filter",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "b1geo",
+                "text": "The algorithm maintains N \"particles\" - each one a hypothesis about the true probability and reweights them as data arrives:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 10,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "131js",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 44,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 44,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "48h4l",
+                "text": "Particle Filter for a Live Prediction Market",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 11,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "2odc1",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "b4h9j",
+                "text": "Why is this better than just using the market price directly?",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 40,
+                    "offset": 28,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "cdn47",
+                "text": "Because the particle filter smooths noise and propagates uncertainty.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "a9d7c",
+                "text": "When the market spikes from $0.58 to $0.65 on a single trade, the filter recognizes that the true probability might not have changed that much it tempers the update based on how volatile the observation process has been. ",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "ckfqm",
+                "text": "Part V: Three Variance Reduction Tricks That Stack",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 24,
+                    "offset": 70,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "47v27",
+                "text": "Before we leave Monte Carlo territory, here are three techniques that combine multiplicatively with everything above.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 13,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 13,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "6vkr6",
+                "text": "Free Symmetry",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "54bkl",
+                "text": "When the payoff function is monotone (which binary contracts always are higher prices mean higher probability of exceeding the strike), the variance reduction is guaranteed:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 12,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "c31i0",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "7jqvn",
+                "text": "Typical reduction is around 50-75%. Zero extra computational cost beyond doubling the function evaluations (which you were going to do anyway).",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 29,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 29,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "fen0m",
+                "text": "Exploit What You Already Know",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 170,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "61dkr",
+                "text": "If you're simulating a binary contract {S_T > K} under stochastic volatility (no closed form), use the Black-Scholes digital price p_{BS}​ (which has a closed form) as a control variate:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 13,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "9j45v",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 18,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 18,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "b32b2",
+                "text": "Divide and Conquer",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 17,
+                    "offset": 168,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "4b8at",
+                "text": "Partition the probability space into JJ J strata, sample within each, combine. The variance is always ≤ crude MC (by the law of total variance), with maximum gain from Neyman allocation: nj∝ωjσj​ (oversample strata with high variance).",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 14,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "bnnrv",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 15,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "8tov3",
+                "text": "Stack all three",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 8,
+                    "offset": 101,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "d31rp",
+                "text": "Antithetic variates inside each stratum, with a control variate correction and you routinely achieve 100–500x variance reduction over crude MC. This is not optional in production. This is table stakes.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "arthn",
+                "text": "Part VI: Modeling What Correlation Matrices Can't",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "fvimj",
+                "text": "The hierarchical Bayesian model implicitly encodes correlation through the shared national swing parameter.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 15,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "amokk",
+                "text": "But what about tail dependence - the tendency for extreme co-movements that don't show up in linear correlation?",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 3,
+                    "offset": 219,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "crbu7",
+                "text": "In 2008, the Gaussian copula's failure to model tail dependence contributed to the global financial crisis. In prediction markets, the same issue arises: when one swing state has a surprise result, the probability that all swing states flip together is much higher than a Gaussian copula would predict.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 15,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "87kir",
+                "text": "Sklar's Theorem",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 15,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "312lk",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "cbkrk",
+                "text": "where C is the copula (the pure dependency structure) and F_i​ are the marginal CDFs. You can model each market's marginal behavior separately, then glue them together with a copula that captures the dependency including in the tails.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 27,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 27,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "e60ud",
+                "text": "The Tail Dependence Problem",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 15,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "18uup",
+                "text": "Gaussian copula: Tail dependence λU=λL=0. Extreme co-movements are modeled as having zero probability.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 22,
+                    "offset": 8,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "28kp2",
+                "text": "This is catastrophically wrong for correlated prediction markets.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 16,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 16,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "9pa15",
+                "text": "Student-t copula",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 16,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "8d0lb",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "780a1",
+                "text": "With ν=4 and ρ=0.6, tail dependence is approximately 0.18 -z an 18% probability that extreme co-movement occurs given one contract hits an extreme. Gaussian would say 0%.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 14,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "6ckoo",
+                "text": "Clayton copula: Lower tail dependence only (λL=2^−1/θ. When one prediction market crashes, others follow. No upper tail dependence.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 13,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "mqa5",
+                "text": "Gumbel copula: Upper tail dependence only (λU​=2−2^1/θ). Correlated positive resolutions.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 48,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 48,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "5n8gm",
+                "text": "Simulating Correlated Prediction Market Outcomes",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 17,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "4hj1i",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 12,
+                    "offset": 12,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "b9b9b",
+                "text": "This is the exact reason the Gaussian copula failed in 2008 and would fail again for prediction market portfolios.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bvbqn",
+                "text": "The t-copula with v = 4 routinely shows 2–5x higher probability of extreme joint outcomes.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "dcel",
+                "text": "If you're trading correlated prediction market contracts without modeling tail dependence, you're running a portfolio that will blow up in exactly the scenarios that matter most.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 11,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 11,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "dbrun",
+                "text": "Vine Copula",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 12,
+                    "offset": 55,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "dagcq",
+                "text": "For d>5 contracts, bivariate copulas are insufficient. Vine copulas decompose the dd d-dimensional dependency into d(d−1)/2 bivariate conditional copulas arranged in a tree structure:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "42vs1",
+                "text": "C-vine (star): One central event drives everything (e.g., presidential winner -> all policy markets)",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "6l9us",
+                "text": "D-vine (path): Sequential dependencies (e.g., primary results flow into general election)",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "oop",
+                "text": "R-vine (general graph): Maximum flexibility",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "atas3",
+                "text": "build maximum spanning trees ordered by ∣τKendall∣, select pair-copula families via AIC, estimate sequentially. Implementations: pyvinecopulib (Python), VineCopula (R).",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "d9tt",
+                "text": "Part VII: Agent-Based Simulation",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bgein",
+                "text": "Everything so far assumes you know the data-generating process and just need to simulate it.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 20,
+                    "offset": 40,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "8h4tt",
+                "text": "But prediction markets are populated by heterogeneous agents - informed traders, noise traders, market makers, and bots whose interactions produce emergent dynamics that no closed-form SDE can capture.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 32,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 32,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "el7v2",
+                "text": "The Zero-Intelligence Revelation",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 79,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "7vdhn",
+                "text": "Markets can be efficient even when every single trader is completely irrational.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "f9ut3",
+                "text": "Gode & Sunder (1993) showed that zero-intelligence agents - traders who submit random orders subject only to budget constraints achieve near-100% allocative efficiency in a continuous double auction.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "cihlh",
+                "text": "Farmer, Patelli & Zovko (2005) extended this to limit order books.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "8j8ol",
+                "text": "This explained 96% of cross-sectional spread variation on the London Stock Exchange. One parameter. 96%.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 39,
+                    "offset": 0,
+                    "style": "Bold"
+                  },
+                  {
+                    "length": 39,
+                    "offset": 0,
+                    "style": "Italic"
+                  }
+                ],
+                "key": "a70e5",
+                "text": "Agent-Based Prediction Market Simulator",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [
+                  {
+                    "key": 18,
+                    "length": 1,
+                    "offset": 0
+                  }
+                ],
+                "inlineStyleRanges": [],
+                "key": "2d7m2",
+                "text": " ",
+                "type": "atomic"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 73,
+                    "offset": 1,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "fthl3",
+                "text": "How fast prices converge depends on the ratio of informed to noise traders, how market maker spread responds to information flow, and why the informed traders extract profit at noise traders expense.",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [
+                  {
+                    "length": 6,
+                    "offset": 0,
+                    "style": "Bold"
+                  }
+                ],
+                "key": "e8frv",
+                "text": "Part VIII: The Production Stack",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "b7a4n",
+                "text": "Here's the complete system, from market data to trade execution:",
+                "type": "unstyled"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "cuoo1",
+                "text": "LAYER 1: DATA INGESTION\n- WebSocket feed from Polymarket CLOB API (real-time prices, volumes)\n- News/poll feeds (NLP-processed into probability signals)  \n- On-chain event data (Polygon)",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "5cc58",
+                "text": "LAYER 2: PROBABILITY ENGINE  \n- Hierarchical Bayesian model (Stan/PyMC) state-level posteriors\n- Particle filter real-time updating on new observations\n- Jump-diffusion SDE path simulation for risk management\n- Ensemble: weighted average of model outputs",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "e0tig",
+                "text": "LAYER 3: DEPENDENCY MODELING\n- Vine copula pairwise dependencies between contracts\n- Factor model shared national/global risk factors\n- Tail dependence estimation via t-copula",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "arrk4",
+                "text": "LAYER 4: RISK MANAGEMENT\n- EVT-based VaR and Expected Shortfall\n- Reverse stress testing identify worst-case scenarios\n- Correlation stress what if state correlations spike?\n - Liquidity risk order book depth monitoring",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "bae9r",
+                "text": "LAYER 5: MONITORING\n- Brier score tracking (are we calibrated?)\n- P&L attribution (which model component added value?)\n- Drawdown alerts\n- Model drift detection",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6e8ep",
+                "text": "References",
+                "type": "header-two"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "4c689",
+                "text": "Dalen (2025). \"Toward Black-Scholes for Prediction Markets.\" arXiv:2510.15205",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "4m0qv",
+                "text": "Saguillo et al. (2025). \"Unravelling the Probabilistic Forest: Arbitrage in Prediction Markets.\" arXiv:2508.03474",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "8e44f",
+                "text": "Madrigal-Cianci et al. (2026). \"Prediction Markets as Bayesian Inverse Problems.\" arXiv:2601.18815",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6hnld",
+                "text": "Farmer, Patelli & Zovko (2005). \"The Predictive Power of Zero Intelligence.\" PNAS",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "3u660",
+                "text": "Gode & Sunder (1993). \"Allocative Efficiency of Markets with Zero-Intelligence Traders.\" JPE",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "eg8hk",
+                "text": "Kyle (1985). \"Continuous Auctions and Insider Trading.\" Econometrica",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "cdpct",
+                "text": "Glosten & Milgrom (1985). \"Bid, Ask, and Transaction Prices.\" JFE",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6vpcc",
+                "text": "Hoffman & Gelman (2014). \"The No-U-Turn Sampler.\" JMLR",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "6kkf",
+                "text": "Merton (1976). \"Option Pricing When Underlying Stock Returns Are Discontinuous.\" JFE",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "c2vek",
+                "text": "Linzer (2013). \"Dynamic Bayesian Forecasting of Presidential Elections.\" JASA",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "16v22",
+                "text": "Gelman et al. (2020). \"Updated Dynamic Bayesian Forecasting Model.\" HDSR",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "b1655",
+                "text": "Aas, Czado, Frigessi & Bakken (2009). \"Pair-Copula Constructions of Multiple Dependence.\" Insurance: Mathematics and Economics",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "d9bml",
+                "text": "Wiese et al. (2020). \"Quant GANs: Deep Generation of Financial Time Series.\" Quantitative Finance",
+                "type": "unordered-list-item"
+              },
+              {
+                "data": {},
+                "entityRanges": [],
+                "inlineStyleRanges": [],
+                "key": "flrs9",
+                "text": "Kidger et al. (2021). \"Neural SDEs as Infinite-Dimensional GANs.\" ICML",
+                "type": "unordered-list-item"
+              }
+            ],
+            "entityMap": [
+              {
+                "key": "12",
+                "value": {
+                  "data": {
+                    "entityKey": "a7395bbf-68b3-4482-84a4-0ba53592bf5e",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "15",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027733031750938624"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "8",
+                "value": {
+                  "data": {
+                    "entityKey": "3ae1cb50-f300-44cb-bcdd-4393b63aab1f",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "11",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027728624791547905"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "4",
+                "value": {
+                  "data": {
+                    "entityKey": "eefb03f1-b440-4f6d-8e75-dc7ef5b4b16f",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "5",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027725955414872066"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "15",
+                "value": {
+                  "data": {
+                    "entityKey": "06cd920a-865a-44e3-9e8c-a57968122925",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "19",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027735705506746372"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "11",
+                "value": {
+                  "data": {
+                    "markdown": "```python\nimport numpy as np\nfrom scipy.special import expit, logit  # sigmoid and logit\n\nclass PredictionMarketParticleFilter:\n    \"\"\"\n    Sequential Monte Carlo filter for real-time event probability estimation.\n    \n    Usage during a live event (e.g., election night):\n        pf = PredictionMarketParticleFilter(prior_prob=0.50)\n        pf.update(observed_price=0.55)   # market moves on early returns\n        pf.update(observed_price=0.62)   # more data\n        pf.update(observed_price=0.58)   # partial correction\n        print(pf.estimate())             # filtered probability\n    \"\"\"\n    def __init__(self, N_particles=5000, prior_prob=0.5,\n                 process_vol=0.05, obs_noise=0.03):\n        self.N = N_particles\n        self.process_vol = process_vol\n        self.obs_noise = obs_noise\n        \n        # Initialize particles around prior\n        logit_prior = logit(prior_prob)\n        self.logit_particles = logit_prior + np.random.normal(0, 0.5, N_particles)\n        self.weights = np.ones(N_particles) / N_particles\n        self.history = []\n    \n    def update(self, observed_price):\n        \"\"\"Incorporate a new observation (market price, poll result, etc.)\"\"\"\n        # 1. Propagate: random walk in logit space\n        noise = np.random.normal(0, self.process_vol, self.N)\n        self.logit_particles += noise\n        \n        # 2. Convert to probability space\n        prob_particles = expit(self.logit_particles)\n        \n        # 3. Reweight: likelihood of observation given each particle\n        log_likelihood = -0.5 * ((observed_price - prob_particles) / self.obs_noise)**2\n        log_weights = np.log(self.weights + 1e-300) + log_likelihood\n        \n        # Normalize in log space for stability\n        log_weights -= log_weights.max()\n        self.weights = np.exp(log_weights)\n        self.weights /= self.weights.sum()\n        \n        # 4. Check ESS and resample if needed\n        ess = 1.0 / np.sum(self.weights**2)\n        if ess < self.N / 2:\n            self._systematic_resample()\n        \n        self.history.append(self.estimate())\n    \n    def _systematic_resample(self):\n        \"\"\"Systematic resampling - lower variance than multinomial.\"\"\"\n        cumsum = np.cumsum(self.weights)\n        u = (np.arange(self.N) + np.random.uniform()) / self.N\n        indices = np.searchsorted(cumsum, u)\n        self.logit_particles = self.logit_particles[indices]\n        self.weights = np.ones(self.N) / self.N\n    \n    def estimate(self):\n        \"\"\"Weighted mean probability estimate.\"\"\"\n        probs = expit(self.logit_particles)\n        return np.average(probs, weights=self.weights)\n    \n    def credible_interval(self, alpha=0.05):\n        \"\"\"Weighted quantile-based credible interval.\"\"\"\n        probs = expit(self.logit_particles)\n        sorted_idx = np.argsort(probs)\n        sorted_probs = probs[sorted_idx]\n        sorted_weights = self.weights[sorted_idx]\n        cumw = np.cumsum(sorted_weights)\n        lower = sorted_probs[np.searchsorted(cumw, alpha/2)]\n        upper = sorted_probs[np.searchsorted(cumw, 1 - alpha/2)]\n        return lower, upper\n\n# --- Simulate election night ---\npf = PredictionMarketParticleFilter(prior_prob=0.50, process_vol=0.03)\n\n# Incoming observations (market prices as new data arrives)\nobservations = [0.50, 0.52, 0.55, 0.58, 0.61, 0.63, 0.60, \n                0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]\n\nprint(\"Election Night Tracker:\")\nprint(f\"{'Time':>6}  {'Observed':>10}  {'Filtered':>10}  {'95% CI':>20}\")\nprint(\"-\" * 52)\n\nfor t, obs in enumerate(observations):\n    pf.update(obs)\n    ci = pf.credible_interval()\n    print(f\"{t:>5}h  {obs:>10.3f}  {pf.estimate():>10.3f}  ({ci[0]:.3f}, {ci[1]:.3f})\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "9",
+                "value": {
+                  "data": {
+                    "entityKey": "2369c061-b6b9-4aba-b6d5-94f908cb5197",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "13",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027728668210950144"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "13",
+                "value": {
+                  "data": {
+                    "entityKey": "5f0288fe-5f08-47ae-9c41-e841f49d8a37",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "17",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027733677510176769"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "16",
+                "value": {
+                  "data": {
+                    "entityKey": "959136d9-0ad0-4af1-9ff1-6aedf100dbea",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "21",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027735985014870016"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "5",
+                "value": {
+                  "data": {
+                    "markdown": "```python\ndef brier_score(predictions, outcomes):\n    \"\"\"Evaluate simulation calibration.\"\"\"\n    return np.mean((np.array(predictions) - np.array(outcomes))**2)\n\n# Compare two models\nmodel_A_preds = [0.7, 0.3, 0.9, 0.1]  # sharp, confident\nmodel_B_preds = [0.5, 0.5, 0.5, 0.5]  # always uncertain\nactual_outcomes = [1, 0, 1, 0]\n\nprint(f\"Model A Brier: {brier_score(model_A_preds, actual_outcomes):.4f}\")  # 0.05\nprint(f\"Model B Brier: {brier_score(model_B_preds, actual_outcomes):.4f}\")  # 0.25\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "10",
+                "value": {
+                  "data": {
+                    "markdown": "```\n1. INITIALIZE: Draw x_0^{(i)} ~ Prior  for i = 1,...,N\n   Set weights w_0^{(i)} = 1/N\n\n2. FOR each new observation y_t:\n   a. PROPAGATE:  x_t^{(i)} ~ f( · | x_{t-1}^{(i)} )\n   b. REWEIGHT:   w_t^{(i)} ∝ g( y_t | x_t^{(i)} )  \n   c. NORMALIZE:  w̃_t^{(i)} = w_t^{(i)} / Σ_j w_t^{(j)}\n   d. RESAMPLE if ESS = 1/Σ(w̃_t^{(i)})² < N/2\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "6",
+                "value": {
+                  "data": {
+                    "entityKey": "2e0dcce7-b3b1-43d7-aa18-d5424c08dac5",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "9",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027726905726656512"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "1",
+                "value": {
+                  "data": {
+                    "entityKey": "fc8e033e-0552-4c95-a804-40273a469311",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "3",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027725706667454465"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "17",
+                "value": {
+                  "data": {
+                    "markdown": "```python\nimport numpy as np\nfrom scipy.stats import norm, t as t_dist\n\ndef simulate_correlated_outcomes_gaussian(probs, corr_matrix, N=100_000):\n    \"\"\"Gaussian copula no tail dependence.\"\"\"\n    d = len(probs)\n    L = np.linalg.cholesky(corr_matrix)\n    Z = np.random.standard_normal((N, d))\n    X = Z @ L.T\n    U = norm.cdf(X)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\ndef simulate_correlated_outcomes_t(probs, corr_matrix, nu=4, N=100_000):\n    \"\"\"Student-t copula symmetric tail dependence.\"\"\"\n    d = len(probs)\n    L = np.linalg.cholesky(corr_matrix)\n    Z = np.random.standard_normal((N, d))\n    X = Z @ L.T\n    \n    # Divide by sqrt(chi-squared / nu) to get t-distributed\n    S = np.random.chisquare(nu, N) / nu\n    T = X / np.sqrt(S[:, None])\n    U = t_dist.cdf(T, nu)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\ndef simulate_correlated_outcomes_clayton(probs, theta=2.0, N=100_000):\n    \"\"\"Clayton copula (bivariate) lower tail dependence.\"\"\"\n    # Marshall-Olkin algorithm\n    V = np.random.gamma(1/theta, 1, N)\n    E = np.random.exponential(1, (N, len(probs)))\n    U = (1 + E / V[:, None])**(-1/theta)\n    outcomes = (U < np.array(probs)).astype(int)\n    return outcomes\n\n\n# --- Compare tail behavior ---\nprobs = [0.52, 0.53, 0.51, 0.48, 0.50]  # 5 swing state probabilities\nstate_names = ['PA', 'MI', 'WI', 'GA', 'AZ']\n\ncorr = np.array([\n    [1.0, 0.7, 0.7, 0.4, 0.3],\n    [0.7, 1.0, 0.8, 0.3, 0.3],\n    [0.7, 0.8, 1.0, 0.3, 0.3],\n    [0.4, 0.3, 0.3, 1.0, 0.5],\n    [0.3, 0.3, 0.3, 0.5, 1.0],\n])\n\nN = 500_000\n\ngauss_outcomes = simulate_correlated_outcomes_gaussian(probs, corr, N)\nt_outcomes = simulate_correlated_outcomes_t(probs, corr, nu=4, N=N)\n\n# P(sweep all 5 states)\np_sweep_gauss = gauss_outcomes.all(axis=1).mean()\np_sweep_t = t_outcomes.all(axis=1).mean()\n\n# P(lose all 5 states)  \np_lose_gauss = (1 - gauss_outcomes).all(axis=1).mean()\np_lose_t = (1 - t_outcomes).all(axis=1).mean()\n\n# If independent\np_sweep_indep = np.prod(probs)\np_lose_indep = np.prod([1-p for p in probs])\n\nprint(\"Joint Outcome Probabilities:\")\nprint(f\"{'':>25}  {'Independent':>12}  {'Gaussian':>12}  {'t-copula':>12}\")\nprint(f\"{'P(sweep all 5)':>25}  {p_sweep_indep:>12.4f}  {p_sweep_gauss:>12.4f}  {p_sweep_t:>12.4f}\")\nprint(f\"{'P(lose all 5)':>25}  {p_lose_indep:>12.4f}  {p_lose_gauss:>12.4f}  {p_lose_t:>12.4f}\")\nprint(f\"\\nt-copula increases sweep probability by {p_sweep_t/p_sweep_gauss:.1f}x vs Gaussian\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "14",
+                "value": {
+                  "data": {
+                    "markdown": "```python\ndef stratified_binary_mc(S0, K, sigma, T, J=10, N_total=100_000):\n    \"\"\"\n    Stratified MC for binary contract pricing.\n    Strata defined by quantiles of the terminal price distribution.\n    \"\"\"\n    n_per_stratum = N_total // J\n    estimates = []\n    \n    for j in range(J):\n        # Uniform draws within stratum [j/J, (j+1)/J]\n        U = np.random.uniform(j/J, (j+1)/J, n_per_stratum)\n        Z = norm.ppf(U)\n        S_T = S0 * np.exp((-0.5*sigma**2)*T + sigma*np.sqrt(T)*Z)\n        stratum_mean = (S_T > K).mean()\n        estimates.append(stratum_mean)\n    \n    # Each stratum has weight 1/J\n    p_stratified = np.mean(estimates)\n    se_stratified = np.std(estimates) / np.sqrt(J)\n    \n    return p_stratified, se_stratified\n\np, se = stratified_binary_mc(S0=100, K=105, sigma=0.20, T=30/365)\nprint(f\"Stratified estimate: {p:.6f} ± {se:.6f}\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "0",
+                "value": {
+                  "data": {
+                    "entityKey": "d1ae2774-194e-4182-813c-4d969200c554",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "1",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027701974250950656"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "2",
+                "value": {
+                  "data": {
+                    "entityKey": "ccfba0f2-7001-488d-b63c-c2c9bec5aa1b",
+                    "mediaItems": [
+                      {
+                        "localMediaId": "23",
+                        "mediaCategory": "DraftTweetImage",
+                        "mediaId": "2027740037530451968"
+                      }
+                    ]
+                  },
+                  "mutability": "Immutable",
+                  "type": "MEDIA"
+                }
+              },
+              {
+                "key": "18",
+                "value": {
+                  "data": {
+                    "markdown": "```python\nimport numpy as np\nfrom collections import deque\n\nclass PredictionMarketABM:\n    \"\"\"\n    Agent-based model of a prediction market order book.\n    \n    Agent types:\n    - Informed: know the true probability, trade toward it\n    - Noise: random trades\n    - Market maker: provides liquidity around current price\n    \"\"\"\n    def __init__(self, true_prob, n_informed=10, n_noise=50, n_mm=5):\n        self.true_prob = true_prob\n        self.price = 0.50  # initial price\n        self.price_history = [self.price]\n        \n        # Order book (simplified as bid/ask queues)\n        self.best_bid = 0.49\n        self.best_ask = 0.51\n        \n        # Agent populations\n        self.n_informed = n_informed\n        self.n_noise = n_noise\n        self.n_mm = n_mm\n        \n        # Track metrics\n        self.volume = 0\n        self.informed_pnl = 0\n        self.noise_pnl = 0\n    \n    def step(self):\n        \"\"\"One time step: randomly select an agent to trade.\"\"\"\n        total = self.n_informed + self.n_noise + self.n_mm\n        r = np.random.random()\n        \n        if r < self.n_informed / total:\n            self._informed_trade()\n        elif r < (self.n_informed + self.n_noise) / total:\n            self._noise_trade()\n        else:\n            self._mm_update()\n        \n        self.price_history.append(self.price)\n    \n    def _informed_trade(self):\n        \"\"\"Informed trader: buy if price < true_prob, sell otherwise.\"\"\"\n        signal = self.true_prob + np.random.normal(0, 0.02)  # noisy signal\n        \n        if signal > self.best_ask + 0.01:  # buy\n            size = min(0.1, abs(signal - self.price) * 2)\n            self.price += size * self._kyle_lambda()\n            self.volume += size\n            self.informed_pnl += (self.true_prob - self.best_ask) * size\n        elif signal < self.best_bid - 0.01:  # sell\n            size = min(0.1, abs(self.price - signal) * 2)\n            self.price -= size * self._kyle_lambda()\n            self.volume += size\n            self.informed_pnl += (self.best_bid - self.true_prob) * size\n        \n        self.price = np.clip(self.price, 0.01, 0.99)\n        self._update_book()\n    \n    def _noise_trade(self):\n        \"\"\"Noise trader: random buy/sell.\"\"\"\n        direction = np.random.choice([-1, 1])\n        size = np.random.exponential(0.02)\n        self.price += direction * size * self._kyle_lambda()\n        self.price = np.clip(self.price, 0.01, 0.99)\n        self.volume += size\n        self.noise_pnl -= abs(self.price - self.true_prob) * size * 0.5\n        self._update_book()\n    \n    def _mm_update(self):\n        \"\"\"Market maker: tighten spread toward current price.\"\"\"\n        spread = max(0.02, 0.05 * (1 - self.volume / 100))\n        self.best_bid = self.price - spread / 2\n        self.best_ask = self.price + spread / 2\n    \n    def _kyle_lambda(self):\n        \"\"\"Price impact parameter.\"\"\"\n        sigma_v = abs(self.true_prob - self.price) + 0.05\n        sigma_u = 0.1 * np.sqrt(self.n_noise)\n        return sigma_v / (2 * sigma_u)\n    \n    def _update_book(self):\n        spread = self.best_ask - self.best_bid\n        self.best_bid = self.price - spread / 2\n        self.best_ask = self.price + spread / 2\n    \n    def run(self, n_steps=1000):\n        for _ in range(n_steps):\n            self.step()\n        return np.array(self.price_history)\n\n\n# --- Simulation ---\nnp.random.seed(42)\n\n# Scenario: true probability is 0.65, market starts at 0.50\nsim = PredictionMarketABM(true_prob=0.65, n_informed=10, n_noise=50, n_mm=5)\nprices = sim.run(n_steps=2000)\n\nprint(\"Agent-Based Prediction Market Simulation\")\nprint(f\"True probability:   {sim.true_prob:.2f}\")\nprint(f\"Starting price:     0.50\")\nprint(f\"Final price:        {prices[-1]:.4f}\")\nprint(f\"Price at t=500:     {prices[500]:.4f}\")\nprint(f\"Price at t=1000:    {prices[1000]:.4f}\")\nprint(f\"Total volume:       {sim.volume:.1f}\")\nprint(f\"Informed P&L:       ${sim.informed_pnl:.2f}\")\nprint(f\"Noise trader P&L:   ${sim.noise_pnl:.2f}\")\nprint(f\"Convergence error:  {abs(prices[-1] - sim.true_prob):.4f}\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "7",
+                "value": {
+                  "data": {
+                    "markdown": "```python\ndef rare_event_IS(S0, K_crash, sigma, T, N_paths=100_000):\n    \"\"\"\n    Importance sampling for extreme downside binary contracts.\n    \n    Example: P(S&P drops 20% in one week)\n    \"\"\"\n    K = S0 * (1 - K_crash)  # e.g., 20% crash threshold\n    \n    # Original drift (risk-neutral)\n    mu_original = -0.5 * sigma**2\n    \n    # Tilted drift: shift the mean toward the crash region\n    # Choose mu_tilt so the crash threshold is ~1 std dev away instead of ~4\n    log_threshold = np.log(K / S0)\n    mu_tilt = log_threshold / T  # center the distribution on the crash\n    \n    Z = np.random.standard_normal(N_paths)\n    \n    # Simulate under TILTED measure\n    log_returns_tilted = mu_tilt * T + sigma * np.sqrt(T) * Z\n    S_T_tilted = S0 * np.exp(log_returns_tilted)\n    \n    # Likelihood ratio: original density / tilted density\n    log_returns_original = mu_original * T + sigma * np.sqrt(T) * Z\n    log_LR = (\n        -0.5 * ((log_returns_tilted - mu_original * T) / (sigma * np.sqrt(T)))**2\n        + 0.5 * ((log_returns_tilted - mu_tilt * T) / (sigma * np.sqrt(T)))**2\n    )\n    LR = np.exp(log_LR)\n    \n    # IS estimator\n    payoffs = (S_T_tilted < K).astype(float)\n    is_estimates = payoffs * LR\n    \n    p_IS = is_estimates.mean()\n    se_IS = is_estimates.std() / np.sqrt(N_paths)\n    \n    # Compare with crude MC\n    Z_crude = np.random.standard_normal(N_paths)\n    S_T_crude = S0 * np.exp(mu_original * T + sigma * np.sqrt(T) * Z_crude)\n    p_crude = (S_T_crude < K).mean()\n    se_crude = np.sqrt(p_crude * (1 - p_crude) / N_paths) if p_crude > 0 else float('inf')\n    \n    return {\n        'p_IS': p_IS, 'se_IS': se_IS,\n        'p_crude': p_crude, 'se_crude': se_crude,\n        'variance_reduction': (se_crude / se_IS)**2 if se_IS > 0 else float('inf')\n    }\n\nresult = rare_event_IS(S0=5000, K_crash=0.20, sigma=0.15, T=5/252)\nprint(f\"IS estimate:    {result['p_IS']:.6f} ± {result['se_IS']:.6f}\")\nprint(f\"Crude estimate: {result['p_crude']:.6f} ± {result['se_crude']:.6f}\")\nprint(f\"Variance reduction factor: {result['variance_reduction']:.1f}x\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              },
+              {
+                "key": "3",
+                "value": {
+                  "data": {
+                    "markdown": "```python\nimport numpy as np\n\ndef simulate_binary_contract(S0, K, mu, sigma, T, N_paths=100_000):\n    \"\"\"\n    Monte Carlo simulation for a binary contract.\n    \n    S0:    Current asset price\n    K:     Strike / threshold\n    mu:    Annual drift\n    sigma: Annual volatility\n    T:     Time to expiry in years\n    N_paths: Number of simulated paths\n    \"\"\"\n    # Simulate terminal prices via GBM\n    Z = np.random.standard_normal(N_paths)\n    S_T = S0 * np.exp((mu - 0.5 * sigma**2) * T + sigma * np.sqrt(T) * Z)\n    \n    # Binary payoff\n    payoffs = (S_T > K).astype(float)\n    \n    # Estimate and confidence interval\n    p_hat = payoffs.mean()\n    se = np.sqrt(p_hat * (1 - p_hat) / N_paths)\n    ci_lower = p_hat - 1.96 * se\n    ci_upper = p_hat + 1.96 * se\n    \n    return {\n        'probability': p_hat,\n        'std_error': se,\n        'ci_95': (ci_lower, ci_upper),\n        'N_paths': N_paths\n    }\n\n# Example: AAPL at $195, strike $200, 20% vol, 30 days\nresult = simulate_binary_contract(S0=195, K=200, mu=0.08, sigma=0.20, T=30/365)\nprint(f\"P(AAPL > $200) ≈ {result['probability']:.4f}\")\nprint(f\"95% CI: ({result['ci_95'][0]:.4f}, {result['ci_95'][1]:.4f})\")\n```"
+                  },
+                  "mutability": "Mutable",
+                  "type": "MARKDOWN"
+                }
+              }
+            ]
+          },
+          "cover_media": {
+            "id": "QXBpTWVkaWE6DAAFCgABHCP+EHtbYAAKAAIaNvAeOZZAAAAA",
+            "media_id": "2027743603989372928",
+            "media_info": {
+              "__typename": "ApiImage",
+              "color_info": {
+                "palette": [
+                  {
+                    "percentage": 78.08,
+                    "rgb": {
+                      "blue": 1,
+                      "green": 1,
+                      "red": 1
+                    }
+                  },
+                  {
+                    "percentage": 21.32,
+                    "rgb": {
+                      "blue": 108,
+                      "green": 109,
+                      "red": 109
+                    }
+                  },
+                  {
+                    "percentage": 0.6,
+                    "rgb": {
+                      "blue": 205,
+                      "green": 207,
+                      "red": 207
+                    }
+                  }
+                ]
+              },
+              "original_img_height": 454,
+              "original_img_url": "https://pbs.twimg.com/media/HCP-EHtbYAACOLP.jpg",
+              "original_img_width": 1135
+            },
+            "media_key": "3_2027743603989372928"
+          },
+          "id": "QXJ0aWNsZUVudGl0eToyMDI3MzcxOTYwMTc1Mzg2NjI0",
+          "lifecycle_state": {
+            "modified_at_secs": 1772286944
+          },
+          "media_entities": [
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPwevmW8AAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027728668210950144",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 97.39,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 2.53,
+                      "rgb": {
+                        "blue": 118,
+                        "green": 119,
+                        "red": 119
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 74,
+                "original_img_url": "https://pbs.twimg.com/media/HCPwevmW8AAX9m4.png",
+                "original_img_width": 249
+              },
+              "media_key": "3_2027728668210950144"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCP1CUsXMAEKAAIaNvAeOZZAAAAA",
+              "media_id": "2027733677510176769",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 98.67,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 1.33,
+                      "rgb": {
+                        "blue": 130,
+                        "green": 131,
+                        "red": 131
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 86,
+                "original_img_url": "https://pbs.twimg.com/media/HCP1CUsXMAEZVB9.png",
+                "original_img_width": 366
+              },
+              "media_key": "3_2027733677510176769"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPuA1pX0AIKAAIaNvAeOZZAAAAA",
+              "media_id": "2027725955414872066",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 98.35,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 1.5,
+                      "rgb": {
+                        "blue": 125,
+                        "green": 126,
+                        "red": 126
+                      }
+                    },
+                    {
+                      "percentage": 0.15,
+                      "rgb": {
+                        "blue": 50,
+                        "green": 51,
+                        "red": 51
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 125,
+                "original_img_url": "https://pbs.twimg.com/media/HCPuA1pX0AIez13.png",
+                "original_img_width": 314
+              },
+              "media_key": "3_2027725955414872066"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPYM82WEAAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027701974250950656",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 97.4,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 2.36,
+                      "rgb": {
+                        "blue": 125,
+                        "green": 125,
+                        "red": 125
+                      }
+                    },
+                    {
+                      "percentage": 0.24,
+                      "rgb": {
+                        "blue": 48,
+                        "green": 49,
+                        "red": 49
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 101,
+                "original_img_url": "https://pbs.twimg.com/media/HCPYM82WEAAQC_l.png",
+                "original_img_width": 282
+              },
+              "media_key": "3_2027701974250950656"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPu4J1W4AAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027726905726656512",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 97.14,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 2.82,
+                      "rgb": {
+                        "blue": 126,
+                        "green": 126,
+                        "red": 126
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 104,
+                "original_img_url": "https://pbs.twimg.com/media/HCPu4J1W4AAhslU.png",
+                "original_img_width": 251
+              },
+              "media_key": "3_2027726905726656512"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCP24XkbEAQKAAIaNvAeOZZAAAAA",
+              "media_id": "2027735705506746372",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 98.88,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 1.12,
+                      "rgb": {
+                        "blue": 135,
+                        "green": 135,
+                        "red": 135
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 72,
+                "original_img_url": "https://pbs.twimg.com/media/HCP24XkbEAQxu3Z.png",
+                "original_img_width": 434
+              },
+              "media_key": "3_2027735705506746372"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCP60hnXAAAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027740037530451968",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 93.73,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 2.45,
+                      "rgb": {
+                        "blue": 183,
+                        "green": 216,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 1.3,
+                      "rgb": {
+                        "blue": 220,
+                        "green": 193,
+                        "red": 153
+                      }
+                    },
+                    {
+                      "percentage": 1.08,
+                      "rgb": {
+                        "blue": 181,
+                        "green": 178,
+                        "red": 228
+                      }
+                    },
+                    {
+                      "percentage": 0.77,
+                      "rgb": {
+                        "blue": 182,
+                        "green": 220,
+                        "red": 180
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 478,
+                "original_img_url": "https://pbs.twimg.com/media/HCP60hnXAAAk90M.png",
+                "original_img_width": 598
+              },
+              "media_key": "3_2027740037530451968"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCP0cvDXMAAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027733031750938624",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 99.92,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 95,
+                "original_img_url": "https://pbs.twimg.com/media/HCP0cvDXMAAb2hH.png",
+                "original_img_width": 638
+              },
+              "media_key": "3_2027733031750938624"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCP3Io0WkAAKAAIaNvAeOZZAAAAA",
+              "media_id": "2027735985014870016",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 98.83,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 1.17,
+                      "rgb": {
+                        "blue": 130,
+                        "green": 130,
+                        "red": 130
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 111,
+                "original_img_url": "https://pbs.twimg.com/media/HCP3Io0WkAAn8A9.png",
+                "original_img_width": 468
+              },
+              "media_key": "3_2027735985014870016"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPwcN2XcAEKAAIaNvAeOZZAAAAA",
+              "media_id": "2027728624791547905",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 99.22,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 0.78,
+                      "rgb": {
+                        "blue": 136,
+                        "green": 136,
+                        "red": 136
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 73,
+                "original_img_url": "https://pbs.twimg.com/media/HCPwcN2XcAEBkr9.png",
+                "original_img_width": 523
+              },
+              "media_key": "3_2027728624791547905"
+            },
+            {
+              "id": "QXBpTWVkaWE6DAAFCgABHCPtyW/XcAEKAAIaNvAeOZZAAAAA",
+              "media_id": "2027725706667454465",
+              "media_info": {
+                "__typename": "ApiImage",
+                "color_info": {
+                  "palette": [
+                    {
+                      "percentage": 97.58,
+                      "rgb": {
+                        "blue": 255,
+                        "green": 255,
+                        "red": 255
+                      }
+                    },
+                    {
+                      "percentage": 2.42,
+                      "rgb": {
+                        "blue": 128,
+                        "green": 128,
+                        "red": 128
+                      }
+                    }
+                  ]
+                },
+                "original_img_height": 98,
+                "original_img_url": "https://pbs.twimg.com/media/HCPtyW_XcAEMMTN.png",
+                "original_img_width": 414
+              },
+              "media_key": "3_2027725706667454465"
+            }
+          ],
+          "metadata": {
+            "first_published_at_secs": 1772286944
+          },
+          "plain_text": "This isn't a list of techniques.\nIt's a story - one that starts with a coin flip and ends with institutional-grade simulation engines.\nEach section builds on the last. Skip ahead and the math won't make sense. Read it in order and by the end you'll have runnable code for every layer of the stack.\nDisclaimer:\nNot Financial Advice & Do Your Own Research\n\nPart I: The Coin Flip That Breaks Everything\nYou're staring at a Polymarket contract. \"Will the Fed cut rates in March?\" YES is trading at $0.62.\nYour instinct says: that's a 62% probability. Maybe you think it should be 70%. So you buy.\nCongratulations. You just did what every retail trader does. You treated a prediction market contract like a coin flip with a known bias, estimated your own bias, and bet the difference.\nYou have no idea how confident to be in your 70% estimate.\nYou don't know how it should change when tomorrow's jobs report drops. \nYou don't know how it correlates with the six other Fed-related contracts on Polymarket.\nYou don't know whether the price path between now and resolution will let you exit at a profit even if you're eventually right.\nA coin flip has one parameter: p.\nA prediction market contract embedded in a portfolio of correlated events, with time-varying information flow, order book dynamics, and execution risk, has dozens.\nPart II: Monte Carlo. The Foundation Nobody Respects Enough\nEvery simulation in this article ultimately reduces to Monte Carlo: draw samples from a distribution, compute a statistic, repeat.\nThe estimator for event probability p=P(A) is just the sample mean:\n \nThe Central Limit Theorem gives you the convergence rate: O(N^{-1/2}, with variance Var(p^_N)=p(1−p)/N.\nThe variance is maximized at p=0.5p A contract trading at 50 cents the most uncertain, most actively traded contract on the platform is exactly where your Monte Carlo estimates are least precise.\nTo hit ±0.01 precision at 95% confidence when p=0.50:\n \nThat's manageable. But it gets worse fast when you need to simulate paths, not just endpoints.\n \nYour First Runnable Simulation\nGoal: Estimate the probability that an asset-linked binary contract pays off (e.g., \"Will AAPL close above $200 by March 15?\")\n \nThis works. For one contract, with one underlying, assuming lognormal dynamics. Real prediction markets break every one of those assumptions.\nEvaluating Your Simulation\nBefore we improve the simulation, we need a way to measure how good it is. The Brier Score is the standard calibration metric:\n \n \nA Brier score below 0.20 is good.\nBelow 0.10 is excellent.\nThe best election forecasters (538, Economist) historically achieve 0.06-0.12 on presidential races.\nIf your simulation can beat that, you have edge.\nPart III: When 100,000 Samples Aren't Enough\nNow the story escalates.\nPolymarket hosts contracts on extreme events. \"Will the S&P 500 drop 20% in one week?\" is trading at $0.003. With crude Monte Carlo at 100,000 samples, you might see zero or one hit.\nYour estimate is either 0.00000 or 0.00001 - both useless.\nThis isn't a theoretical problem. It's the reason most retail traders can't properly evaluate tail-risk contracts.\nMake Rare Events Common\nImportance sampling replaces the original probability measure with one that oversamples the rare region, then corrects the bias with a likelihood \nLikelihood ratio or Radon-Nikodym derivative\nNot useful directly, but it tells you what to aim for.\nThe practical workhorse is exponential tilting.\nIf your underlying follows a random walk with increments Δ_ihaving moment generating function M(γ)=E[e^γΔ], you tilt the distribution:\n \nchoosing γ to make the rare event typical. For a contract that pays off when a sum exceeds a large threshold, γ solves the Lundberg equation M(γ)=1.\nImportance Sampling for Tail-Risk Contracts\n \nOn extreme contracts, IS can reduce variance by factors of 100–10,000x.\nThis means 100 IS samples give better precision than 1,000,000 crude samples.\nThat's not a marginal improvement. It's the difference between \"we can't price this\" and \"we're trading it.\"\nPart IV: Sequential Monte Carlo for Real-Time Updating\nBut what I need to do while the story shifts from static estimation to dynamic simulation?\nImagine:\nIt's election night. 8:01 PM EST. Florida polls just closed. Early returns show a 3-point shift toward one candidate.\nYour model needs to update instantly incorporating this new data point into the probability estimate for not just Florida, but Ohio, Pennsylvania, Michigan, and every correlated state.\nThis is the filtering problem, and the tool is Sequential Monte Carlo  particle filters.\nThe State-Space Model\nDefine:\nHidden state x_t​: the \"true\" probability of the event (unobserved)\nObservation y_t: market prices, poll results, vote counts, news signals\nThe state evolves via a logit random walk (keeps probabilities bounded):\n \nObservations are noisy readings of the true state:\n \nThe Bootstrap Particle Filter\nThe algorithm maintains N \"particles\" - each one a hypothesis about the true probability and reweights them as data arrives:\n \nParticle Filter for a Live Prediction Market\n \nWhy is this better than just using the market price directly?\nBecause the particle filter smooths noise and propagates uncertainty.\nWhen the market spikes from $0.58 to $0.65 on a single trade, the filter recognizes that the true probability might not have changed that much it tempers the update based on how volatile the observation process has been. \nPart V: Three Variance Reduction Tricks That Stack\nBefore we leave Monte Carlo territory, here are three techniques that combine multiplicatively with everything above.\nFree Symmetry\nWhen the payoff function is monotone (which binary contracts always are higher prices mean higher probability of exceeding the strike), the variance reduction is guaranteed:\n \nTypical reduction is around 50-75%. Zero extra computational cost beyond doubling the function evaluations (which you were going to do anyway).\nExploit What You Already Know\nIf you're simulating a binary contract {S_T > K} under stochastic volatility (no closed form), use the Black-Scholes digital price p_{BS}​ (which has a closed form) as a control variate:\n \nDivide and Conquer\nPartition the probability space into JJ J strata, sample within each, combine. The variance is always ≤ crude MC (by the law of total variance), with maximum gain from Neyman allocation: nj∝ωjσj​ (oversample strata with high variance).\n \nStack all three\nAntithetic variates inside each stratum, with a control variate correction and you routinely achieve 100–500x variance reduction over crude MC. This is not optional in production. This is table stakes.\nPart VI: Modeling What Correlation Matrices Can't\nThe hierarchical Bayesian model implicitly encodes correlation through the shared national swing parameter.\nBut what about tail dependence - the tendency for extreme co-movements that don't show up in linear correlation?\nIn 2008, the Gaussian copula's failure to model tail dependence contributed to the global financial crisis. In prediction markets, the same issue arises: when one swing state has a surprise result, the probability that all swing states flip together is much higher than a Gaussian copula would predict.\nSklar's Theorem\n \nwhere C is the copula (the pure dependency structure) and F_i​ are the marginal CDFs. You can model each market's marginal behavior separately, then glue them together with a copula that captures the dependency including in the tails.\nThe Tail Dependence Problem\nGaussian copula: Tail dependence λU=λL=0. Extreme co-movements are modeled as having zero probability.\nThis is catastrophically wrong for correlated prediction markets.\nStudent-t copula\n \nWith ν=4 and ρ=0.6, tail dependence is approximately 0.18 -z an 18% probability that extreme co-movement occurs given one contract hits an extreme. Gaussian would say 0%.\nClayton copula: Lower tail dependence only (λL=2^−1/θ. When one prediction market crashes, others follow. No upper tail dependence.\nGumbel copula: Upper tail dependence only (λU​=2−2^1/θ). Correlated positive resolutions.\nSimulating Correlated Prediction Market Outcomes\n \nThis is the exact reason the Gaussian copula failed in 2008 and would fail again for prediction market portfolios.\nThe t-copula with v = 4 routinely shows 2–5x higher probability of extreme joint outcomes.\nIf you're trading correlated prediction market contracts without modeling tail dependence, you're running a portfolio that will blow up in exactly the scenarios that matter most.\nVine Copula\nFor d>5 contracts, bivariate copulas are insufficient. Vine copulas decompose the dd d-dimensional dependency into d(d−1)/2 bivariate conditional copulas arranged in a tree structure:\nC-vine (star): One central event drives everything (e.g., presidential winner -> all policy markets)\nD-vine (path): Sequential dependencies (e.g., primary results flow into general election)\nR-vine (general graph): Maximum flexibility\nbuild maximum spanning trees ordered by ∣τKendall∣, select pair-copula families via AIC, estimate sequentially. Implementations: pyvinecopulib (Python), VineCopula (R).\nPart VII: Agent-Based Simulation\nEverything so far assumes you know the data-generating process and just need to simulate it.\nBut prediction markets are populated by heterogeneous agents - informed traders, noise traders, market makers, and bots whose interactions produce emergent dynamics that no closed-form SDE can capture.\nThe Zero-Intelligence Revelation\nMarkets can be efficient even when every single trader is completely irrational.\nGode & Sunder (1993) showed that zero-intelligence agents - traders who submit random orders subject only to budget constraints achieve near-100% allocative efficiency in a continuous double auction.\nFarmer, Patelli & Zovko (2005) extended this to limit order books.\nThis explained 96% of cross-sectional spread variation on the London Stock Exchange. One parameter. 96%.\nAgent-Based Prediction Market Simulator\n \nHow fast prices converge depends on the ratio of informed to noise traders, how market maker spread responds to information flow, and why the informed traders extract profit at noise traders expense.\nPart VIII: The Production Stack\nHere's the complete system, from market data to trade execution:\nLAYER 1: DATA INGESTION\n- WebSocket feed from Polymarket CLOB API (real-time prices, volumes)\n- News/poll feeds (NLP-processed into probability signals)  \n- On-chain event data (Polygon)\nLAYER 2: PROBABILITY ENGINE  \n- Hierarchical Bayesian model (Stan/PyMC) state-level posteriors\n- Particle filter real-time updating on new observations\n- Jump-diffusion SDE path simulation for risk management\n- Ensemble: weighted average of model outputs\nLAYER 3: DEPENDENCY MODELING\n- Vine copula pairwise dependencies between contracts\n- Factor model shared national/global risk factors\n- Tail dependence estimation via t-copula\nLAYER 4: RISK MANAGEMENT\n- EVT-based VaR and Expected Shortfall\n- Reverse stress testing identify worst-case scenarios\n- Correlation stress what if state correlations spike?\n - Liquidity risk order book depth monitoring\nLAYER 5: MONITORING\n- Brier score tracking (are we calibrated?)\n- P&L attribution (which model component added value?)\n- Drawdown alerts\n- Model drift detection\nReferences\nDalen (2025). \"Toward Black-Scholes for Prediction Markets.\" arXiv:2510.15205\nSaguillo et al. (2025). \"Unravelling the Probabilistic Forest: Arbitrage in Prediction Markets.\" arXiv:2508.03474\nMadrigal-Cianci et al. (2026). \"Prediction Markets as Bayesian Inverse Problems.\" arXiv:2601.18815\nFarmer, Patelli & Zovko (2005). \"The Predictive Power of Zero Intelligence.\" PNAS\nGode & Sunder (1993). \"Allocative Efficiency of Markets with Zero-Intelligence Traders.\" JPE\nKyle (1985). \"Continuous Auctions and Insider Trading.\" Econometrica\nGlosten & Milgrom (1985). \"Bid, Ask, and Transaction Prices.\" JFE\nHoffman & Gelman (2014). \"The No-U-Turn Sampler.\" JMLR\nMerton (1976). \"Option Pricing When Underlying Stock Returns Are Discontinuous.\" JFE\nLinzer (2013). \"Dynamic Bayesian Forecasting of Presidential Elections.\" JASA\nGelman et al. (2020). \"Updated Dynamic Bayesian Forecasting Model.\" HDSR\nAas, Czado, Frigessi & Bakken (2009). \"Pair-Copula Constructions of Multiple Dependence.\" Insurance: Mathematics and Economics\nWiese et al. (2020). \"Quant GANs: Deep Generation of Financial Time Series.\" Quantitative Finance\nKidger et al. (2021). \"Neural SDEs as Infinite-Dimensional GANs.\" ICML",
+          "preview_text": "This isn't a list of techniques.\nIt's a story - one that starts with a coin flip and ends with institutional-grade simulation engines.\nEach section builds on the last. Skip ahead and the math won't",
+          "rest_id": "2027371960175386624",
+          "title": "How to Simulate Like a Quant Desk. Every Model, Every Formula, Runnable Code"
+        }
+      }
+    },
+    "core": {
+      "user_results": {
+        "result": {
+          "__typename": "User",
+          "affiliates_highlighted_label": {},
+          "avatar": {
+            "image_url": "https://pbs.twimg.com/profile_images/1975113774680920064/-dpcubqz_normal.jpg"
+          },
+          "core": {
+            "created_at": "Mon Feb 10 14:40:04 +0000 2025",
+            "name": "gemchanger",
+            "screen_name": "gemchange_ltd"
+          },
+          "dm_permissions": {
+            "can_dm": true
+          },
+          "follow_request_sent": false,
+          "has_graduated_access": true,
+          "id": "VXNlcjoxODg4OTYxMTA2MzM0MzM0OTc2",
+          "is_blue_verified": true,
+          "legacy": {
+            "default_profile": true,
+            "default_profile_image": false,
+            "description": "founder @coldvisionXYZ ~ I do what I probably won't be ashamed of\n\nall content here is sponsored or commissioned",
+            "entities": {
+              "description": {
+                "urls": []
+              }
+            },
+            "fast_followers_count": 0,
+            "favourites_count": 5403,
+            "follow_request_sent": false,
+            "followers_count": 14657,
+            "friends_count": 111,
+            "has_custom_timelines": false,
+            "is_translator": false,
+            "listed_count": 321,
+            "media_count": 331,
+            "normal_followers_count": 14657,
+            "notifications": false,
+            "pinned_tweet_ids_str": [
+              "1981372754315161615"
+            ],
+            "possibly_sensitive": false,
+            "profile_banner_url": "https://pbs.twimg.com/profile_banners/1888961106334334976/1759740262",
+            "profile_interstitial_type": "",
+            "statuses_count": 2581,
+            "translator_type": "none",
+            "want_retweets": false,
+            "withheld_in_countries": []
+          },
+          "location": {
+            "location": ""
+          },
+          "media_permissions": {
+            "can_media_tag": true
+          },
+          "parody_commentary_fan_label": "None",
+          "privacy": {
+            "protected": false
+          },
+          "professional": {
+            "category": [],
+            "professional_type": "Creator",
+            "rest_id": "1969727577758859294"
+          },
+          "profile_bio": {
+            "description": "founder @coldvisionXYZ ~ I do what I probably won't be ashamed of\n\nall content here is sponsored or commissioned"
+          },
+          "profile_description_language": "en",
+          "profile_image_shape": "Circle",
+          "relationship_perspectives": {
+            "blocked_by": false,
+            "blocking": false,
+            "followed_by": false,
+            "following": false,
+            "muting": false
+          },
+          "rest_id": "1888961106334334976",
+          "super_follow_eligible": false,
+          "super_followed_by": false,
+          "super_following": false,
+          "tipjar_settings": {},
+          "verification": {
+            "verified": false
+          }
+        }
+      }
+    },
+    "edit_control": {
+      "edit_tweet_ids": [
+        "2027744530124951831"
+      ],
+      "editable_until_msecs": "1772290544000",
+      "edits_remaining": "5",
+      "is_edit_eligible": false
+    },
+    "grok_analysis_button": true,
+    "has_birdwatch_notes": false,
+    "is_translatable": false,
+    "legacy": {
+      "bookmark_count": 4408,
+      "bookmarked": false,
+      "conversation_id_str": "2027744530124951831",
+      "created_at": "Sat Feb 28 13:55:44 +0000 2026",
+      "display_text_range": [
+        0,
+        23
+      ],
+      "entities": {
+        "hashtags": [],
+        "symbols": [],
+        "timestamps": [],
+        "urls": [
+          {
+            "display_url": "x.com/i/article/2027…",
+            "expanded_url": "http://x.com/i/article/2027371960175386624",
+            "indices": [
+              0,
+              23
+            ],
+            "url": "https://t.co/YbXzSpFE31"
+          }
+        ],
+        "user_mentions": []
+      },
+      "favorite_count": 1302,
+      "favorited": false,
+      "full_text": "https://t.co/YbXzSpFE31",
+      "id_str": "2027744530124951831",
+      "is_quote_status": false,
+      "lang": "zxx",
+      "possibly_sensitive": false,
+      "possibly_sensitive_editable": true,
+      "quote_count": 14,
+      "reply_count": 19,
+      "retweet_count": 100,
+      "retweeted": false,
+      "user_id_str": "1888961106334334976"
+    },
+    "quick_promote_eligibility": {
+      "eligibility": "IneligibleNotProfessional"
+    },
+    "rest_id": "2027744530124951831",
+    "source": "<a href=\"https://mobile.twitter.com\" rel=\"nofollow\">Twitter Web App</a>",
+    "unmention_data": {},
+    "views": {
+      "count": "447530",
+      "state": "EnabledWithCount"
+    }
+  }
+}

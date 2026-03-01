@@ -1,0 +1,93 @@
+{
+  "count": 20,
+  "post_split": {
+    "bullish": 0,
+    "bearish": 4,
+    "neutral": 16
+  },
+  "sentiment_index": -0.2,
+  "top_topics": [
+    [
+      "tariff",
+      2
+    ]
+  ],
+  "top_bullish_accounts": [],
+  "top_bearish_accounts": [
+    {
+      "user": "Pentosh1",
+      "net": -1,
+      "bull": 0,
+      "bear": 1,
+      "posts": 8,
+      "examples": [
+        "@ttexashedge On offense yes. Not sure about Defense and goal tending. Overall slight edge. To can"
+      ]
+    },
+    {
+      "user": "yieldsearcher",
+      "net": -1,
+      "bull": 0,
+      "bear": 1,
+      "posts": 2,
+      "examples": [
+        "@RickMcGinley Last yr was $330b so we we are about 10% done here. As I said, pretty early, but those early filers are the lower income cohort who needs the refund the most."
+      ]
+    },
+    {
+      "user": "DeItaone",
+      "net": -1,
+      "bull": 0,
+      "bear": 1,
+      "posts": 1,
+      "examples": [
+        "BESSENT TELLS CNN TARIFF REFUND WILL BE UP TO LOWER COURTS"
+      ]
+    },
+    {
+      "user": "Evan_ss6",
+      "net": -1,
+      "bull": 0,
+      "bear": 1,
+      "posts": 2,
+      "examples": [
+        "I really hope Kalshi launches a token, I will be shorting it to 0\n\n\ud83d\udc00\ud83d\udc00"
+      ]
+    }
+  ],
+  "sample_bullish_posts": [],
+  "sample_bearish_posts": [
+    {
+      "id": "2025586040765882810",
+      "user": "yieldsearcher",
+      "text": "@RickMcGinley Last yr was $330b so we we are about 10% done here. As I said, pretty early, but those early filers are the lower income cohort who needs the refund the most.",
+      "bull": 0,
+      "bear": 1,
+      "stance": "bearish"
+    },
+    {
+      "id": "2025583939650289830",
+      "user": "DeItaone",
+      "text": "BESSENT TELLS CNN TARIFF REFUND WILL BE UP TO LOWER COURTS",
+      "bull": 0,
+      "bear": 1,
+      "stance": "bearish"
+    },
+    {
+      "id": "2025583063149740157",
+      "user": "Evan_ss6",
+      "text": "I really hope Kalshi launches a token, I will be shorting it to 0\n\n\ud83d\udc00\ud83d\udc00",
+      "bull": 0,
+      "bear": 1,
+      "stance": "bearish"
+    },
+    {
+      "id": "2025582087915405504",
+      "user": "Pentosh1",
+      "text": "@ttexashedge On offense yes. Not sure about Defense and goal tending. Overall slight edge. To can",
+      "bull": 0,
+      "bear": 1,
+      "stance": "bearish"
+    }
+  ]
+}

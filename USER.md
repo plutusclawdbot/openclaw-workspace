@@ -6,7 +6,7 @@ _Learn about the person you're helping. Update this as you go._
 - **What to call them:** Erlin
 - **Pronouns:** _(optional)_
 - **Timezone:** Europe/London
-- **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction). Prefers workspace saves to be committed and pushed by default. Daily memory files (`memory/YYYY-MM-DD.md`) can be updated locally, but should not be committed/pushed to GitHub unless explicitly requested.
+- **Notes:** Prefers fast mode (concise replies, proactive next steps, low-friction confirmations only for external/destructive/sensitive actions). For X/Twitter pulls, use Bird CLI (not scraping/browser extraction). “CT” means pulling from list timeline `https://x.com/i/lists/1933193197817135501` via Bird. Prefers workspace saves to be committed and pushed by default. Daily memory files (`memory/YYYY-MM-DD.md`) can be updated locally, but should not be committed/pushed to GitHub unless explicitly requested.
 
 ## Working Preferences
 

@@ -80,6 +80,14 @@ Decision rule:
 - If you need high-stealth browser behavior/session realism: use **Camoufox**.
 - If you need clicks/logins/multi-step UI interaction: use browser automation.
 
+Local install notes:
+- Installed via pip user site (Python 3.9)
+- Binaries:
+  - `/Users/plutusclawdbot/Library/Python/3.9/bin/scrapling`
+  - `/Users/plutusclawdbot/Library/Python/3.9/bin/camoufox`
+- PATH export added to `~/.zshrc` and `~/.zprofile`:
+  - `export PATH="$HOME/Library/Python/3.9/bin:$PATH"`
+
 ### SSH (m4mini)
 
 - host: `m4mini`
