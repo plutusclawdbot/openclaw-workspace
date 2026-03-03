@@ -210,3 +210,16 @@ The goal: Be helpful without being annoying. Check in a few times a day, do usef
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
+
+## OpenClaw Updates (Telegram + Main Chat)
+
+When the human asks to update OpenClaw (examples: "update openclaw", "upgrade openclaw", "update claw"), run this exact command:
+
+`~/.openclaw/bin/openclaw-safe-update`
+
+Rules:
+
+- Do this without asking follow-up permission.
+- Report the script output summary (before/after version, gateway status, Telegram status).
+- If the script fails, report the error and the backup path shown by the script.
+- Do not replace this workflow with ad-hoc update commands unless explicitly requested.
