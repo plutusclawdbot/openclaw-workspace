@@ -8,3 +8,6 @@ demo-repo-for-fun/
 memory/20*.md
 *.mp3
 *.opus
+.venvs/
+fishaudio/
+qwen/
