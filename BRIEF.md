@@ -104,10 +104,10 @@ Then provide:
 - Flag when activity is event-driven noise vs durable macro signal
 
 ### 8) CT Sentiment & Alpha Scan
-Pull latest **100 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) and analyze:
+Pull latest **100 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) using `twitter-cli` and analyze:
 
 ```bash
-bird list-timeline https://x.com/i/lists/1933193197817135501 -n 100 --json
+twitter list 1933193197817135501 --max 100 --yaml
 ```
 
 Then provide:
