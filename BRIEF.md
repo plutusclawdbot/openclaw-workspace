@@ -104,16 +104,23 @@ Then provide:
 - Flag when activity is event-driven noise vs durable macro signal
 
 ### 8) CT Sentiment & Alpha Scan
-Pull latest **100 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) using `twitter-cli` and analyze:
+Pull latest **200 posts** from CT list (`ct` = `https://x.com/i/lists/1933193197817135501`) using Bird and analyze the actual tweet contents with AI semantic reading (not keyword-only scoring).
 
 ```bash
-twitter list 1933193197817135501 --max 100 --yaml
+bird list-timeline --json -n 200 https://x.com/i/lists/1933193197817135501
 ```
+
+Analysis rules:
+- Read tweet contents semantically with AI.
+- Do **not** classify sentiment using simple keyword heuristics alone.
+- Distinguish directional stance, conditional stance, sarcasm, and pure news-posting.
+- Separate account-level conviction from one-off tweet tone.
 
 Then provide:
 - **Sentiment split**: Bullish / Bearish / Neutral (% and counts)
 - **Who is bullish**: top accounts + brief thesis tags
 - **Who is bearish**: top accounts + brief thesis tags
+- **Key neutral / watchful accounts**: top accounts + what they are waiting for
 - **HYPE / Hyperliquid mentions**:
   - count of posts mentioning `HYPE`, `Hyperliquid`, or `$HYPE`
   - key narratives (positive/negative/neutral)
@@ -123,11 +130,31 @@ Then provide:
   - separate **noise** vs **tradeable insight**
   - include confidence tags: [High]/[Med]/[Low]
 
-### 9) Actionable Watchlist (Next 1–2 Weeks)
+### 9) Key Account Views
+Pull and interpret recent tweets from these key accounts using Bird and AI semantic reading of the tweet contents:
+- `@citrini`
+- `@DonAlt`
+- `@ezcontra`
+- `@lBattleRhino`
+
+Use recent original tweets/replies first; ignore obvious fluff when possible.
+
+Then provide for each account:
+- **Main view**: one concise paragraph or 2–4 bullets
+- **Asset focus**: macro / equities / oil / crypto / AI / other
+- **Stance**: bullish / bearish / tactical / watchful
+- **Conditions**: what would change their view, if stated
+- **Best supporting evidence**: 1–2 short quote snippets or paraphrases from recent tweets
+
+Then add:
+- **Cross-account synthesis**: where they agree vs disagree
+- **Net takeaway**: what the combined read implies for markets right now
+
+### 10) Actionable Watchlist (Next 1–2 Weeks)
 - 10–15 high-signal catalysts (data, central bank, auctions, geopolitics, earnings clusters)
 - For each: expected market sensitivity and likely cross-asset reaction map
 
-### 10) Pending Economic Indicators (Week Ahead)
+### 11) Pending Economic Indicators (Week Ahead)
 Include a compact forward calendar for the next 7 days:
 - Date/time (Europe/London)
 - Country/region
@@ -141,7 +168,7 @@ Output format:
 - Mark **high-impact** releases with `🔥`
 - Add one final line: `Most market-moving window this week: ...`
 
-### 11) Podcast Signal Check (Conditional)
+### 12) Podcast Signal Check (Conditional)
 Check selected podcasts for market-relevant signal.
 
 Start with:
@@ -163,7 +190,7 @@ When relevant, provide:
   - confidence tags [High]/[Med]/[Low]
 - Distinguish **signal vs noise/hot takes**
 
-### 12) Earnings Transcript Signal
+### 13) Earnings Transcript Signal
 Pull and analyze latest earnings-call transcripts for the most systemically important US companies.
 
 **Recency rule:** only include companies whose latest earnings report/transcript is within the last **7 calendar days** at runtime. If a company’s latest earnings is older than 7 days, **exclude it** from detailed analysis in this section.
@@ -193,7 +220,7 @@ Then add:
 - **US macro read-through:** what this basket implies for growth/inflation cycle
 - **Actionable alpha:** 5–10 tradeable observations, each backed by **2+ independent signals**, with confidence tags [High]/[Med]/[Low]
 
-### 13) Bottom Line (PM Decision Layer)
+### 14) Bottom Line (PM Decision Layer)
 Provide:
 - Base case (55–65%)
 - Alternative case (20–30%)

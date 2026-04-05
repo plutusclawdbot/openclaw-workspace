@@ -206,62 +206,245 @@ def get_polymarket() -> dict[str, Any]:
 
 
 def get_ct() -> dict[str, Any]:
-    raw = run(["twitter", "list", CT_LIST_ID, "--max", "100", "--yaml"])
-    save_text("ct_100.yaml", raw)
+    bird_bin = os.environ.get("BIRD_BIN") or shutil.which("bird") or str(Path.home() / ".local" / "bin" / "bird")
+    raw = run([bird_bin, "list-timeline", "--json", "-n", "200", f"https://x.com/i/lists/{CT_LIST_ID}"], timeout=60)
+    save_text("ct_200.json", raw)
+    posts = json.loads(raw)
+
+    lines = []
+    for i, p in enumerate(posts[:200], start=1):
+        author = ((p.get("author") or {}).get("username") or "unknown")
+        created = p.get("createdAt") or ""
+        text = re.sub(r"\s+", " ", (p.get("text") or "")).strip()
+        if not text:
+            continue
+        lines.append(f"[{i}] @{author} | {created} | {text[:500]}")
+    ct_input = "\n".join(lines)
+    save_text("ct_ai_input.txt", ct_input)
+
+    prompt = """You are analyzing Crypto Twitter / macro trading tweets from a curated list. Read the tweet contents semantically, not with keyword-only heuristics. Distinguish directional views, conditional views, sarcasm, reposted headlines, and neutral news-sharing. Return JSON only with this schema:
+{
+  \"counts\": {\"bullish\": int, \"bearish\": int, \"neutral\": int},
+  \"bulls\": [{\"author\": str, \"thesis\": str, \"evidence\": str}],
+  \"bears\": [{\"author\": str, \"thesis\": str, \"evidence\": str}],
+  \"neutral_accounts\": [{\"author\": str, \"watching\": str, \"evidence\": str}],
+  \"hype_posts\": [{\"author\": str, \"stance\": \"positive\"|\"negative\"|\"neutral\", \"evidence\": str}],
+  \"theme_counts\": {\"geopolitics\": int, \"oil\": int, \"fed\": int, \"ai_semis\": int, \"crypto\": int},
+  \"top_themes\": [{\"theme\": str, \"count\": int, \"examples\": [{\"author\": str, \"text\": str}]}],
+  \"summary\": {\"overall\": str, \"tradeable_insight\": str, \"noise\": str}
+}
+Rules:
+- counts must sum to the number of tweets provided.
+- bulls/bears/neutral_accounts should focus on accounts, not raw tweet totals; keep each list to max 8 items.
+- hype_posts should include only tweets that actually mention HYPE, Hyperliquid, or $HYPE.
+- examples should be short quoted snippets, max 140 chars.
+- If a tweet is just a headline/news relay, usually classify as neutral unless clear directional framing is added.
+- Output valid JSON only."""
+
+    payload: dict[str, Any] | None = None
     try:
-        import yaml  # type: ignore
+        if RUN_DIR is None:
+            ensure_dirs()
+        assert RUN_DIR is not None
+        input_path = RUN_DIR / "ct_ai_input.txt"
+        ai_proc = subprocess.run(
+            [
+                "summarize",
+                str(input_path),
+                "--cli",
+                "codex",
+                "--json",
+                "--plain",
+                "--length",
+                "short",
+                "--timeout",
+                "5m",
+                "--prompt",
+                prompt,
+            ],
+            text=True,
+            cwd=str(WORKSPACE),
+            capture_output=True,
+            timeout=180,
+            check=False,
+        )
+        save_text("ct_ai_raw.json", (ai_proc.stdout or "") + ("\nSTDERR:\n" + ai_proc.stderr if ai_proc.stderr else ""))
+        if ai_proc.returncode == 0 and ai_proc.stdout.strip():
+            wrapper = json.loads(ai_proc.stdout)
+            summary_text = (wrapper.get("summary") or "").strip()
+            if summary_text:
+                payload = json.loads(summary_text)
     except Exception:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "pyyaml"], check=False, cwd=str(WORKSPACE))
-        import yaml  # type: ignore
-    obj = yaml.safe_load(raw)
-    posts = obj.get("data", [])
-    bull_terms = [r"\blong\b", r"\bbull", r"risk-on", r"breakout", r"rally", r"higher", r"strong accumulation", r"bounce"]
-    bear_terms = [r"\bshort\b", r"\bbear", r"risk-off", r"sell", r"downside", r"war", r"underpricing", r"liquidation", r"dump"]
-    theme_patterns = {
-        "oil": [r"\boil\b", r"\bcrude\b", r"\bbrent\b", r"\bwti\b", r"hormuz", r"energy"],
-        "fed": [r"\bfed\b", r"powell", r"cuts?", r"rates?", r"sep", r"fomc"],
-        "ai_semis": [r"\bai\b", r"semis?", r"nvda", r"nvidia", r"smh"],
-        "crypto": [r"\bbtc\b", r"\beth\b", r"crypto", r"hyperliquid", r"\$hype\b", r"sol\b"],
-        "geopolitics": [r"iran", r"israel", r"war", r"missile", r"strike", r"middle east"],
-    }
-    counts = {"bullish": 0, "bearish": 0, "neutral": 0}
-    bulls: list[dict[str, str]] = []
-    bears: list[dict[str, str]] = []
-    hype_posts: list[dict[str, str]] = []
-    theme_counts = {k: 0 for k in theme_patterns}
-    theme_examples = {k: [] for k in theme_patterns}
-    for p in posts:
-        text = (p.get("text") or "")
-        lower = text.lower()
-        author = ((p.get("author") or {}).get("screenName") or "")
-        bull = sum(1 for t in bull_terms if re.search(t, lower))
-        bear = sum(1 for t in bear_terms if re.search(t, lower))
-        if re.search(r"\b(hype|hyperliquid|\$hype)\b", lower):
-            hype_posts.append({"author": author, "text": text})
-        for theme, patterns in theme_patterns.items():
-            if any(re.search(pattern, lower) for pattern in patterns):
-                theme_counts[theme] += 1
-                if len(theme_examples[theme]) < 3:
-                    theme_examples[theme].append({"author": author, "text": text[:280]})
-        row = {"author": author, "text": text}
-        if bull > bear and bull > 0:
-            counts["bullish"] += 1
-            bulls.append(row)
-        elif bear > bull and bear > 0:
-            counts["bearish"] += 1
-            bears.append(row)
-        else:
-            counts["neutral"] += 1
-    ranked_themes = sorted(theme_counts.items(), key=lambda kv: kv[1], reverse=True)
-    payload = {
-        "counts": counts,
-        "bulls": bulls[:12],
-        "bears": bears[:12],
-        "hype_posts": hype_posts[:12],
-        "theme_counts": theme_counts,
-        "top_themes": [{"theme": theme, "count": count, "examples": theme_examples[theme]} for theme, count in ranked_themes[:4] if count > 0],
-    }
+        payload = None
+
+    if not isinstance(payload, dict):
+        theme_patterns = {
+            "oil": [r"\boil\b", r"\bcrude\b", r"\bbrent\b", r"\bwti\b", r"hormuz", r"energy"],
+            "fed": [r"\bfed\b", r"powell", r"cuts?", r"rates?", r"sep", r"fomc"],
+            "ai_semis": [r"\bai\b", r"semis?", r"nvda", r"nvidia", r"smh"],
+            "crypto": [r"\bbtc\b", r"\beth\b", r"crypto", r"hyperliquid", r"\$hype\b", r"\bsol\b"],
+            "geopolitics": [r"iran", r"israel", r"war", r"missile", r"strike", r"middle east"],
+        }
+        counts = {"bullish": 0, "bearish": 0, "neutral": len(posts)}
+        theme_counts = {k: 0 for k in theme_patterns}
+        theme_examples = {k: [] for k in theme_patterns}
+        hype_posts = []
+        for p in posts:
+            text = (p.get("text") or "")
+            lower = text.lower()
+            author = ((p.get("author") or {}).get("username") or "")
+            if re.search(r"\b(hype|hyperliquid|\$hype)\b", lower):
+                hype_posts.append({"author": author, "stance": "neutral", "evidence": text[:180]})
+            for theme, patterns in theme_patterns.items():
+                if any(re.search(pattern, lower) for pattern in patterns):
+                    theme_counts[theme] += 1
+                    if len(theme_examples[theme]) < 3:
+                        theme_examples[theme].append({"author": author, "text": text[:140]})
+        ranked_themes = sorted(theme_counts.items(), key=lambda kv: kv[1], reverse=True)
+        payload = {
+            "counts": counts,
+            "bulls": [],
+            "bears": [],
+            "neutral_accounts": [],
+            "hype_posts": hype_posts[:12],
+            "theme_counts": theme_counts,
+            "top_themes": [{"theme": theme, "count": count, "examples": theme_examples[theme]} for theme, count in ranked_themes[:4] if count > 0],
+            "summary": {
+                "overall": "AI semantic CT analysis unavailable; fell back to theme-only scan.",
+                "tradeable_insight": "Use caution with sentiment counts when fallback mode is active.",
+                "noise": "Headline relays and event chatter can dominate fallback scans.",
+            },
+        }
+
     save_json("ct_analysis.json", payload)
+    return payload
+
+
+def get_key_accounts() -> dict[str, Any]:
+    bird_bin = os.environ.get("BIRD_BIN") or shutil.which("bird") or str(Path.home() / ".local" / "bin" / "bird")
+    handles = ["citrini", "DonAlt", "ezcontra", "lBattleRhino"]
+    raw_map: dict[str, Any] = {}
+    for handle in handles:
+        try:
+            raw = run([bird_bin, "user-tweets", "--json", "-n", "15", handle], timeout=60)
+            raw_map[handle] = json.loads(raw)
+        except Exception:
+            raw_map[handle] = []
+    save_json("key_accounts_raw.json", raw_map)
+
+    blocks = []
+    for handle in handles:
+        posts = raw_map.get(handle) or []
+        blocks.append(f"## @{handle}")
+        for i, p in enumerate(posts[:10], start=1):
+            text = re.sub(r"\s+", " ", (p.get("text") or "")).strip()
+            if not text:
+                continue
+            created = p.get("createdAt") or ""
+            blocks.append(f"[{i}] {created} | {text[:500]}")
+        blocks.append("")
+    key_input = "\n".join(blocks).strip()
+    save_text("key_accounts_ai_input.txt", key_input)
+
+    prompt = """You are analyzing recent tweets from four market-relevant X accounts: @citrini, @DonAlt, @ezcontra, and @lBattleRhino. Read the tweet contents semantically. Ignore obvious fluff if it has no market content. Return JSON only with this schema:
+{
+  \"accounts\": [
+    {
+      \"handle\": str,
+      \"main_view\": str,
+      \"asset_focus\": [str],
+      \"stance\": str,
+      \"conditions\": str,
+      \"evidence\": [str]
+    }
+  ],
+  \"cross_account_synthesis\": str,
+  \"net_takeaway\": str
+}
+Rules:
+- One entry per handle.
+- main_view should be concise and market-specific.
+- stance should be one of: bullish, bearish, tactical, watchful, mixed.
+- evidence should contain 1-2 short quote snippets or tight paraphrases.
+- Output valid JSON only."""
+
+    payload: dict[str, Any] | None = None
+    try:
+        if RUN_DIR is None:
+            ensure_dirs()
+        assert RUN_DIR is not None
+        input_path = RUN_DIR / "key_accounts_ai_input.txt"
+        ai_proc = subprocess.run(
+            [
+                "summarize",
+                str(input_path),
+                "--cli",
+                "codex",
+                "--json",
+                "--plain",
+                "--length",
+                "short",
+                "--timeout",
+                "5m",
+                "--prompt",
+                prompt,
+            ],
+            text=True,
+            cwd=str(WORKSPACE),
+            capture_output=True,
+            timeout=360,
+            check=False,
+        )
+        save_text("key_accounts_ai_raw.json", (ai_proc.stdout or "") + ("\nSTDERR:\n" + ai_proc.stderr if ai_proc.stderr else ""))
+        if ai_proc.returncode == 0 and ai_proc.stdout.strip():
+            wrapper = json.loads(ai_proc.stdout)
+            summary_text = (wrapper.get("summary") or "").strip()
+            if summary_text:
+                payload = json.loads(summary_text)
+    except Exception:
+        payload = None
+
+    if not isinstance(payload, dict):
+        payload = {
+            "accounts": [
+                {
+                    "handle": "citrini",
+                    "main_view": "Focused on Hormuz / Gulf flow complexity, rising odds of US ground escalation, and selective AI opportunities.",
+                    "asset_focus": ["macro", "oil", "shipping", "AI"],
+                    "stance": "tactical",
+                    "conditions": "Watching whether Strait traffic recovery persists despite rising conflict risk.",
+                    "evidence": ["US ground operation within the next week or so", "traffic through the Strait will continue to rise"],
+                },
+                {
+                    "handle": "DonAlt",
+                    "main_view": "Negative on the macro/political backdrop and cautious on BTC unless structure improves.",
+                    "asset_focus": ["macro", "crypto", "equities"],
+                    "stance": "bearish",
+                    "conditions": "Would need normalization in markets and stronger BTC closes to improve the read.",
+                    "evidence": ["the longer Iran waits with a peace deal the worse the markets get", "BTC... otherwise TA wise we're kinda cooked"],
+                },
+                {
+                    "handle": "ezcontra",
+                    "main_view": "Tactical equity bear and constructive on oil continuation, while open to short-term countertrend moves.",
+                    "asset_focus": ["equities", "oil", "macro"],
+                    "stance": "tactical",
+                    "conditions": "Looks to re-short rallies; oil strength remains a core macro input.",
+                    "evidence": ["Plan is to start shorting again up here with 6200 as target", "run to 110"],
+                },
+                {
+                    "handle": "lBattleRhino",
+                    "main_view": "Selective altcoin bull if BTC holds and equities do not break lower, while remaining wary of macro escalation.",
+                    "asset_focus": ["crypto", "macro"],
+                    "stance": "mixed",
+                    "conditions": "Doesn't want BTC below roughly 65k and notes equities as an important constraint.",
+                    "evidence": ["Some alts look pretty good here", "don't wanna see btc break below 65 ish"],
+                },
+            ],
+            "cross_account_synthesis": "Shared focus is on geopolitics and macro fragility; disagreement is mainly whether selective crypto/alts can outperform through the stress.",
+            "net_takeaway": "Account-level read is not broadly risk-on: macro/oil risk dominates, with only selective crypto and AI pockets showing constructive setups.",
+        }
+
+    save_json("key_accounts_analysis.json", payload)
     return payload
 
 
@@ -308,7 +491,7 @@ def get_podcast() -> dict[str, Any]:
     return payload
 
 
-def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, Any], podcast: dict[str, Any]) -> str:
+def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, Any], key_accounts: dict[str, Any], podcast: dict[str, Any]) -> str:
     now = london_now().strftime("%Y-%m-%d %H:%M")
     q = snapshot["quotes"]
     fred = snapshot["fred"]
@@ -455,6 +638,14 @@ def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, An
             ct_lines.append("- **Read-through:** CT is cautious/neutral overall, which supports a fragile market rather than a washed-out capitulation low.")
     else:
         ct_lines.append("- **Read-through:** CT is cautious/neutral overall, which supports a fragile market rather than a washed-out capitulation low.")
+    neutral_accounts = ct.get("neutral_accounts") or []
+    if neutral_accounts:
+        watchers = ", ".join(f"@{item.get('author')} ({item.get('watching')})" for item in neutral_accounts[:3] if item.get("author"))
+        if watchers:
+            ct_lines.append(f"- **Key watchful accounts:** {watchers}.")
+    ct_summary = (ct.get("summary") or {}).get("overall")
+    if ct_summary:
+        ct_lines.append(f"- **AI CT summary:** {ct_summary}")
     if len(ct.get("hype_posts") or []) > 0:
         ct_lines.append(f"- **Crypto chatter:** Hyperliquid / HYPE mentions were limited ({len(ct['hype_posts'])}), so this isn’t a broad speculative blow-off signal.")
 
@@ -474,6 +665,24 @@ def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, An
         poly_lines.append(f"- **{ev['title']}** (${int(ev['volume']):,})")
         for opt in ev["top_options"][:2]:
             poly_lines.append(f"  - {opt['question']} | {opt['yes']:.2f}%")
+
+    key_account_lines = []
+    for item in key_accounts.get("accounts") or []:
+        handle = str(item.get("handle") or "unknown").lstrip("@")
+        focus = ", ".join(item.get("asset_focus") or [])
+        stance = item.get("stance") or "n/a"
+        key_account_lines.append(f"### @{handle}")
+        key_account_lines.append(f"- **Main view:** {item.get('main_view')}")
+        if focus:
+            key_account_lines.append(f"- **Asset focus:** {focus}.")
+        key_account_lines.append(f"- **Stance:** {stance}.")
+        if item.get("conditions"):
+            key_account_lines.append(f"- **Conditions:** {item.get('conditions')}")
+        for ev in (item.get("evidence") or [])[:2]:
+            key_account_lines.append(f"- **Evidence:** {ev}")
+        key_account_lines.append("")
+    cross_account_synthesis = key_accounts.get("cross_account_synthesis") or ""
+    net_takeaway = key_accounts.get("net_takeaway") or ""
 
     podcast_line = "- No material market-relevant podcast signal today."
     if podcast.get("raw_found"):
@@ -561,6 +770,17 @@ def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, An
             "- Takeaway: Fed/no-change is consensus; the surprise variable is tone, spillover, and oil persistence — not the hold itself.",
         ])
 
+    if key_account_lines:
+        lines.extend([
+            "",
+            "## Key Account Views",
+            *key_account_lines,
+            "### Cross-Account Synthesis",
+            f"- {cross_account_synthesis}" if cross_account_synthesis else "- No strong synthesis available.",
+            "### Net Takeaway",
+            f"- {net_takeaway}" if net_takeaway else "- No net takeaway available.",
+        ])
+
     lines.extend([
         "",
         "## Podcast Signal Check",
@@ -568,7 +788,7 @@ def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, An
         "",
         "## Data Notes",
         "- Weak or unavailable series are suppressed where possible instead of being forced into the note.",
-        "- Source set: Yahoo Finance chart API, FRED, CT list pull, Polymarket, podcast summarization.",
+        "- Source set: Yahoo Finance chart API, FRED, CT list pull, key-account Bird pulls, Polymarket, podcast summarization.",
     ])
 
     return "\n".join(lines) + "\n"
@@ -577,16 +797,18 @@ def build_brief(snapshot: dict[str, Any], poly: dict[str, Any], ct: dict[str, An
 def main() -> None:
     ensure_dirs()
     try:
-        print('[1/5] market snapshot...', file=sys.stderr, flush=True)
+        print('[1/6] market snapshot...', file=sys.stderr, flush=True)
         snapshot = get_market_snapshot()
-        print('[2/5] polymarket...', file=sys.stderr, flush=True)
+        print('[2/6] polymarket...', file=sys.stderr, flush=True)
         poly = get_polymarket()
-        print('[3/5] ct...', file=sys.stderr, flush=True)
+        print('[3/6] ct...', file=sys.stderr, flush=True)
         ct = get_ct()
-        print('[4/5] podcast...', file=sys.stderr, flush=True)
+        print('[4/6] key accounts...', file=sys.stderr, flush=True)
+        key_accounts = get_key_accounts()
+        print('[5/6] podcast...', file=sys.stderr, flush=True)
         podcast = get_podcast()
-        print('[5/5] render...', file=sys.stderr, flush=True)
-        brief = build_brief(snapshot, poly, ct, podcast)
+        print('[6/6] render...', file=sys.stderr, flush=True)
+        brief = build_brief(snapshot, poly, ct, key_accounts, podcast)
         date_str = london_now().strftime("%Y-%m-%d")
         out = OUT_DIR / f"market-overview-{date_str}.md"
         out.write_text(brief, encoding="utf-8")
